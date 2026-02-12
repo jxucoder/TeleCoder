@@ -16,7 +16,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jxucoder/opentl/internal/config"
+	"github.com/jxucoder/opentl/internal/decomposer"
 	"github.com/jxucoder/opentl/internal/github"
+	"github.com/jxucoder/opentl/internal/indexer"
 	"github.com/jxucoder/opentl/internal/orchestrator"
 	"github.com/jxucoder/opentl/internal/sandbox"
 	"github.com/jxucoder/opentl/internal/session"
@@ -324,112 +326,66 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 
 // --- Session execution ---
 
+// sandboxRoundResult holds the outcome of a single sandbox execution round.
+type sandboxRoundResult struct {
+	containerID string
+	exitCode    int
+	lastLine    string
+}
+
 func (s *Server) runSession(sess *session.Session) {
 	ctx := context.Background()
 
-	// Phase 2: Plan step (if orchestrator is available).
-	prompt := sess.Prompt
-	var plan string
+	// Phase 2: Index the repo for codebase context.
+	var repoContext string
+	s.emitEvent(sess.ID, "status", "Indexing repository...")
+	rc, err := indexer.Index(ctx, s.github.GoGH(), sess.Repo)
+	if err != nil {
+		log.Printf("Repo indexing failed (proceeding without context): %v", err)
+		s.emitEvent(sess.ID, "status", "Repo indexing failed, proceeding without context")
+	} else {
+		repoContext = rc.String()
+		s.emitEvent(sess.ID, "status", "Repository indexed")
+	}
+
+	// Phase 2: Decompose the task into sub-tasks (if orchestrator is available).
+	var subTasks []decomposer.SubTask
 	if s.orchestrator != nil {
-		s.emitEvent(sess.ID, "status", "Planning task...")
+		s.emitEvent(sess.ID, "status", "Analyzing task complexity...")
 		var err error
-		plan, err = s.orchestrator.Plan(ctx, sess.Repo, sess.Prompt)
+		subTasks, err = decomposer.Decompose(ctx, s.orchestrator.LLM(), sess.Prompt, repoContext)
 		if err != nil {
-			log.Printf("Planning failed (falling back to direct prompt): %v", err)
-			s.emitEvent(sess.ID, "status", "Planning failed, using direct prompt")
-		} else {
-			s.emitEvent(sess.ID, "output", "## Plan\n"+plan)
-			prompt = s.orchestrator.EnrichPrompt(sess.Prompt, plan)
+			log.Printf("Task decomposition failed (treating as single task): %v", err)
+			subTasks = []decomposer.SubTask{{Title: "Complete task", Description: sess.Prompt}}
 		}
-	}
-
-	s.emitEvent(sess.ID, "status", "Starting sandbox...")
-
-	// Start the Docker container.
-	containerID, err := s.sandbox.Start(ctx, sandbox.StartOptions{
-		SessionID: sess.ID,
-		Repo:      sess.Repo,
-		Prompt:    prompt,
-		Branch:    sess.Branch,
-		Image:     s.config.DockerImage,
-		Env:       s.config.SandboxEnv(),
-		Network:   s.config.DockerNetwork,
-	})
-	if err != nil {
-		s.failSession(sess, fmt.Sprintf("failed to start sandbox: %v", err))
-		return
-	}
-
-	sess.ContainerID = containerID
-	sess.Status = session.StatusRunning
-	s.store.UpdateSession(sess)
-	s.emitEvent(sess.ID, "status", "Sandbox started, running agent...")
-
-	// Stream container logs.
-	logStream, err := s.sandbox.StreamLogs(ctx, containerID)
-	if err != nil {
-		s.failSession(sess, fmt.Sprintf("failed to stream logs: %v", err))
-		return
-	}
-	defer logStream.Close()
-
-	var lastLine string
-	for logStream.Scan() {
-		line := logStream.Text()
-		lastLine = line
-
-		switch {
-		case strings.HasPrefix(line, "###OPENTL_STATUS### "):
-			msg := strings.TrimPrefix(line, "###OPENTL_STATUS### ")
-			s.emitEvent(sess.ID, "status", msg)
-		case strings.HasPrefix(line, "###OPENTL_ERROR### "):
-			msg := strings.TrimPrefix(line, "###OPENTL_ERROR### ")
-			s.emitEvent(sess.ID, "error", msg)
-		case strings.HasPrefix(line, "###OPENTL_DONE### "):
-			branch := strings.TrimPrefix(line, "###OPENTL_DONE### ")
-			sess.Branch = branch
-			s.emitEvent(sess.ID, "status", fmt.Sprintf("Branch pushed: %s", branch))
-		default:
-			s.emitEvent(sess.ID, "output", line)
+		if len(subTasks) > 1 {
+			s.emitEvent(sess.ID, "status", fmt.Sprintf("Task decomposed into %d steps", len(subTasks)))
 		}
+	} else {
+		subTasks = []decomposer.SubTask{{Title: "Complete task", Description: sess.Prompt}}
 	}
 
-	// Wait for container to exit.
-	exitCode, err := s.sandbox.Wait(ctx, containerID)
-	if err != nil {
-		s.failSession(sess, fmt.Sprintf("error waiting for sandbox: %v", err))
-		return
-	}
-
-	if exitCode != 0 {
-		errMsg := fmt.Sprintf("sandbox exited with code %d", exitCode)
-		if lastLine != "" {
-			errMsg += ": " + lastLine
+	// Execute each sub-task through the plan -> sandbox -> review pipeline.
+	var lastContainerID string
+	for i, task := range subTasks {
+		if len(subTasks) > 1 {
+			s.emitEvent(sess.ID, "step", fmt.Sprintf("Step %d/%d: %s", i+1, len(subTasks), task.Title))
 		}
-		s.failSession(sess, errMsg)
-		return
-	}
 
-	// Phase 2: Review step (if orchestrator is available and we have a plan).
-	if s.orchestrator != nil && plan != "" {
-		s.emitEvent(sess.ID, "status", "Reviewing changes...")
-
-		// Get the diff from the sandbox (best-effort, non-blocking).
-		diff := s.getDiffFromContainer(ctx, containerID)
-		if diff != "" {
-			review, err := s.orchestrator.Review(ctx, sess.Prompt, plan, diff)
-			if err != nil {
-				log.Printf("Review failed (proceeding with PR): %v", err)
-				s.emitEvent(sess.ID, "status", "Review failed, proceeding with PR")
-			} else if !review.Approved {
-				s.emitEvent(sess.ID, "output", "## Review Feedback\n"+review.Feedback)
-				s.emitEvent(sess.ID, "status", "Review requested revision (bounded to 1 round)")
-				// TODO: Phase 2 enhancement -- run a second sandbox round with review feedback.
-				// For now, proceed with PR and include review feedback in the PR body.
-			} else {
-				s.emitEvent(sess.ID, "output", "## Review\n"+review.Feedback)
+		containerID, err := s.runSubTask(ctx, sess, task.Description, repoContext)
+		if err != nil {
+			s.failSession(sess, fmt.Sprintf("step %d/%d failed: %v", i+1, len(subTasks), err))
+			if lastContainerID != "" {
+				s.sandbox.Stop(ctx, lastContainerID)
 			}
+			return
 		}
+
+		// Clean up previous step's container.
+		if lastContainerID != "" && lastContainerID != containerID {
+			s.sandbox.Stop(ctx, lastContainerID)
+		}
+		lastContainerID = containerID
 	}
 
 	// Create PR.
@@ -463,8 +419,160 @@ func (s *Server) runSession(sess *session.Session) {
 
 	s.emitEvent(sess.ID, "done", prURL)
 
-	// Clean up container.
-	s.sandbox.Stop(ctx, containerID)
+	// Clean up last container.
+	if lastContainerID != "" {
+		s.sandbox.Stop(ctx, lastContainerID)
+	}
+}
+
+// runSubTask executes a single sub-task through the plan -> sandbox -> review
+// pipeline with up to MaxRevisions review-revision rounds. Returns the last
+// container ID used, or an error.
+func (s *Server) runSubTask(ctx context.Context, sess *session.Session, taskPrompt, repoContext string) (string, error) {
+	// Plan step.
+	prompt := taskPrompt
+	var plan string
+	if s.orchestrator != nil {
+		s.emitEvent(sess.ID, "status", "Planning task...")
+		var err error
+		plan, err = s.orchestrator.Plan(ctx, sess.Repo, taskPrompt, repoContext)
+		if err != nil {
+			log.Printf("Planning failed (falling back to direct prompt): %v", err)
+			s.emitEvent(sess.ID, "status", "Planning failed, using direct prompt")
+		} else {
+			s.emitEvent(sess.ID, "output", "## Plan\n"+plan)
+			prompt = s.orchestrator.EnrichPrompt(taskPrompt, plan)
+		}
+	}
+
+	// Sandbox execution with review-revision loop.
+	maxRounds := s.config.MaxRevisions
+	var lastContainerID string
+
+	for round := 0; round <= maxRounds; round++ {
+		if round > 0 {
+			s.emitEvent(sess.ID, "status", fmt.Sprintf("Starting revision round %d/%d...", round, maxRounds))
+		}
+
+		result, err := s.runSandboxRound(ctx, sess, prompt)
+		if err != nil {
+			return lastContainerID, err
+		}
+
+		// Clean up previous round's container.
+		if lastContainerID != "" && lastContainerID != result.containerID {
+			s.sandbox.Stop(ctx, lastContainerID)
+		}
+		lastContainerID = result.containerID
+
+		if result.exitCode != 0 {
+			errMsg := fmt.Sprintf("sandbox exited with code %d", result.exitCode)
+			if result.lastLine != "" {
+				errMsg += ": " + result.lastLine
+			}
+			return lastContainerID, fmt.Errorf("%s", errMsg)
+		}
+
+		// Review step (if orchestrator is available and we have a plan).
+		if s.orchestrator == nil || plan == "" {
+			break
+		}
+
+		s.emitEvent(sess.ID, "status", "Reviewing changes...")
+		diff := s.getDiffFromContainer(ctx, result.containerID)
+		if diff == "" {
+			s.emitEvent(sess.ID, "status", "No diff found, skipping review")
+			break
+		}
+
+		review, err := s.orchestrator.Review(ctx, taskPrompt, plan, diff)
+		if err != nil {
+			log.Printf("Review failed (proceeding): %v", err)
+			s.emitEvent(sess.ID, "status", "Review failed, proceeding")
+			break
+		}
+
+		if review.Approved {
+			s.emitEvent(sess.ID, "output", "## Review\n"+review.Feedback)
+			break
+		}
+
+		// Review requested revision.
+		s.emitEvent(sess.ID, "output", "## Review Feedback\n"+review.Feedback)
+
+		if round >= maxRounds {
+			s.emitEvent(sess.ID, "status", fmt.Sprintf("Max revision rounds (%d) reached, proceeding", maxRounds))
+			break
+		}
+
+		prompt = s.orchestrator.RevisePrompt(taskPrompt, plan, review.Feedback)
+	}
+
+	return lastContainerID, nil
+}
+
+// runSandboxRound executes a single sandbox container run (start, stream logs,
+// wait for exit). It returns the container ID, exit code, and last log line.
+func (s *Server) runSandboxRound(ctx context.Context, sess *session.Session, prompt string) (*sandboxRoundResult, error) {
+	s.emitEvent(sess.ID, "status", "Starting sandbox...")
+
+	containerID, err := s.sandbox.Start(ctx, sandbox.StartOptions{
+		SessionID: sess.ID,
+		Repo:      sess.Repo,
+		Prompt:    prompt,
+		Branch:    sess.Branch,
+		Image:     s.config.DockerImage,
+		Env:       s.config.SandboxEnv(),
+		Network:   s.config.DockerNetwork,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to start sandbox: %w", err)
+	}
+
+	sess.ContainerID = containerID
+	sess.Status = session.StatusRunning
+	s.store.UpdateSession(sess)
+	s.emitEvent(sess.ID, "status", "Sandbox started, running agent...")
+
+	// Stream container logs.
+	logStream, err := s.sandbox.StreamLogs(ctx, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stream logs: %w", err)
+	}
+	defer logStream.Close()
+
+	var lastLine string
+	for logStream.Scan() {
+		line := logStream.Text()
+		lastLine = line
+
+		switch {
+		case strings.HasPrefix(line, "###OPENTL_STATUS### "):
+			msg := strings.TrimPrefix(line, "###OPENTL_STATUS### ")
+			s.emitEvent(sess.ID, "status", msg)
+		case strings.HasPrefix(line, "###OPENTL_ERROR### "):
+			msg := strings.TrimPrefix(line, "###OPENTL_ERROR### ")
+			s.emitEvent(sess.ID, "error", msg)
+		case strings.HasPrefix(line, "###OPENTL_DONE### "):
+			branch := strings.TrimPrefix(line, "###OPENTL_DONE### ")
+			sess.Branch = branch
+			s.emitEvent(sess.ID, "status", fmt.Sprintf("Branch pushed: %s", branch))
+		default:
+			s.emitEvent(sess.ID, "output", line)
+		}
+	}
+
+	// Wait for container to exit.
+	exitCode, err := s.sandbox.Wait(ctx, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("error waiting for sandbox: %w", err)
+	}
+
+	return &sandboxRoundResult{
+		containerID: containerID,
+		exitCode:    exitCode,
+		lastLine:    lastLine,
+	}, nil
 }
 
 // getDiffFromContainer runs `git diff` inside the container to get the changes.

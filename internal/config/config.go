@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // Config holds all configuration for the OpenTL server.
@@ -44,6 +45,10 @@ type Config struct {
 	TelegramBotToken string
 	// TelegramDefaultRepo is the fallback repository when --repo is not specified.
 	TelegramDefaultRepo string
+
+	// MaxRevisions is the maximum number of review-revision rounds before
+	// proceeding to PR creation. 0 means no revisions (review only). Default: 1.
+	MaxRevisions int
 }
 
 // Load creates a Config from environment variables with sensible defaults.
@@ -67,6 +72,7 @@ func Load() (*Config, error) {
 		SlackDefaultRepo:    os.Getenv("SLACK_DEFAULT_REPO"),
 		TelegramBotToken:    os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramDefaultRepo: os.Getenv("TELEGRAM_DEFAULT_REPO"),
+		MaxRevisions:        envOrInt("OPENTL_MAX_REVISIONS", 1),
 	}
 
 	return cfg, nil
@@ -105,6 +111,15 @@ func (c *Config) SandboxEnv() []string {
 		env = append(env, "OPENAI_API_KEY="+c.OpenAIAPIKey)
 	}
 	return env
+}
+
+func envOrInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }
 
 func envOr(key, fallback string) string {

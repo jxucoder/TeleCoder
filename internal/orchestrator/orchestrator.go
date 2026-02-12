@@ -32,10 +32,21 @@ func New(llm LLMClient) *Orchestrator {
 	return &Orchestrator{llm: llm}
 }
 
+// LLM returns the underlying LLM client for use by other packages (e.g. the
+// task decomposer) that need to make LLM calls.
+func (o *Orchestrator) LLM() LLMClient {
+	return o.llm
+}
+
 // Plan generates a structured plan for a task.
-func (o *Orchestrator) Plan(ctx context.Context, repo, prompt string) (string, error) {
+// If repoContext is non-empty it is included so the planner knows the codebase
+// structure (file tree, key files, languages, etc.).
+func (o *Orchestrator) Plan(ctx context.Context, repo, prompt, repoContext string) (string, error) {
 	system := plannerSystemPrompt
 	user := fmt.Sprintf("Repository: %s\n\nTask: %s", repo, prompt)
+	if repoContext != "" {
+		user = fmt.Sprintf("Repository: %s\n\n## Codebase Context\n%s\n\nTask: %s", repo, repoContext, prompt)
+	}
 
 	plan, err := o.llm.Complete(ctx, system, user)
 	if err != nil {
@@ -62,6 +73,29 @@ The following plan was generated for this task. Follow it closely.
 - If tests fail, fix the issues before proceeding
 - Keep changes minimal and focused on the task
 - Do not make unrelated changes`, originalPrompt, plan)
+}
+
+// RevisePrompt builds an instruction for a revision round. The coding agent
+// receives the original task, the plan, and specific reviewer feedback so it
+// can fix the issues without starting from scratch.
+func (o *Orchestrator) RevisePrompt(originalPrompt, plan, feedback string) string {
+	return fmt.Sprintf(`## Task
+%s
+
+## Plan
+%s
+
+## Revision Instructions
+A code review found issues with the previous attempt. Address the following
+feedback carefully. Only change what the reviewer flagged -- do not redo work
+that was already approved.
+
+%s
+
+## General Rules
+- Run tests after making changes if a test suite exists
+- Keep changes minimal and focused on the feedback
+- Do not make unrelated changes`, originalPrompt, plan, feedback)
 }
 
 // ReviewResult is the outcome of a code review.
@@ -93,10 +127,12 @@ func (o *Orchestrator) Review(ctx context.Context, prompt, plan, diff string) (*
 
 const plannerSystemPrompt = `You are a senior software engineer planning a code change.
 
-Given a repository name and a task description, create a structured plan.
+Given a repository name, optional codebase context (file tree, key config files,
+language breakdown), and a task description, create a structured plan.
 
 Your plan should include:
-1. **Files to modify** - List specific files that need changes
+1. **Files to modify** - List specific files that need changes (use the codebase
+   context to identify real paths when available)
 2. **Approach** - Step-by-step approach to implement the change
 3. **Testing** - How to verify the changes work
 4. **Risks** - Any potential issues or edge cases to watch for
