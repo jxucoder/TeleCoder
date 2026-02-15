@@ -164,9 +164,8 @@ TeleCoder/
 - [x] Extracted engine, pipeline, HTTP API into independent packages
 - [x] Framework importable as a Go library
 
-### Phase 4 - Scale
+### Phase 4 - Quality and Speed
 
-- [ ] Sandbox pre-warming and caching
-- [ ] Modal / cloud sandbox provider
-- [ ] Multiplayer sessions
-- [ ] Kubernetes Helm chart
+- [ ] Built-in test/lint pipeline stage — verify agent output before creating PR
+- [ ] Sandbox pre-warming and snapshot restore for near-instant startup
+- [ ] Remote sandbox provider — run sandboxes on a VPS or cloud Docker host
