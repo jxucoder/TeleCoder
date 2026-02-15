@@ -6,7 +6,7 @@
 
 Send a task. Get a PR.
 
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Required-2496ED?style=flat&logo=docker&logoColor=white)](https://docs.docker.com/get-docker/)
 
@@ -24,7 +24,7 @@ opentl run "add rate limiting to /api/users" --repo myorg/myapp
 
 1. You send a task — via **CLI**, **Slack**, or **Telegram**
 2. OpenTL spins up an **isolated Docker sandbox** with your repo
-3. A coding agent works on the task — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://openai.com/index/codex/), or [OpenCode](https://opencode.ai/)
+3. A coding agent works on the task — [OpenCode](https://opencode.ai/) (Anthropic key) or [Codex](https://openai.com/index/codex/) (OpenAI key)
 4. Changes are committed, pushed, and a **PR is opened**
 5. You review the PR
 
@@ -52,7 +52,7 @@ graph LR
 
 ### Prerequisites
 
-- [Go 1.22+](https://go.dev/dl/)
+- [Go](https://go.dev/dl/) (version compatible with `go.mod`)
 - [Docker](https://docs.docker.com/get-docker/)
 - A GitHub personal access token ([create one](https://github.com/settings/tokens) with `repo` scope)
 - An LLM API key — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
@@ -123,8 +123,10 @@ OpenTL is a single binary — `opentl serve` runs the server, `opentl run` talks
 
 | Component | Description |
 |:----------|:------------|
-| **Server** | Go HTTP server. Manages sessions, streams events via SSE, creates PRs. |
-| **Sandbox** | One Docker container per task. Clones the repo, runs the coding agent (Claude Code, Codex, or OpenCode), pushes a branch. |
+| **Server** | Go HTTP server. Manages sessions, streams events via SSE, and creates PRs. |
+| **Orchestrator** | Plan -> code -> review pipeline with optional task decomposition and revision rounds. |
+| **GitHub Context Indexer** | Fetches repo metadata/tree/key files to give the planner real codebase context. |
+| **Sandbox** | One Docker container per task (or persistent container for chat mode). Clones repo, runs coding agent (OpenCode/Codex), and pushes a branch. |
 | **CLI** | Creates sessions, streams logs, checks status. |
 | **Slack / Telegram** | Bot integrations — send tasks from chat, get PR links back. |
 | **Web UI** | React + Vite dashboard for monitoring sessions. |
@@ -133,10 +135,13 @@ OpenTL is a single binary — `opentl serve` runs the server, `opentl run` talks
 
 | Method | Endpoint | Description |
 |:-------|:---------|:------------|
-| `POST` | `/api/sessions` | Create a session |
+| `POST` | `/api/sessions` | Create a session (`mode=task` or `mode=chat`) |
 | `GET` | `/api/sessions` | List sessions |
 | `GET` | `/api/sessions/:id` | Get session details |
 | `GET` | `/api/sessions/:id/events` | SSE stream of events |
+| `GET` | `/api/sessions/:id/messages` | List chat messages |
+| `POST` | `/api/sessions/:id/messages` | Send chat message |
+| `POST` | `/api/sessions/:id/pr` | Create PR from chat session |
 | `POST` | `/api/sessions/:id/stop` | Stop a session |
 | `GET` | `/health` | Health check |
 
@@ -153,6 +158,9 @@ All configuration is via environment variables:
 | `OPENTL_DATA_DIR` | No | `~/.opentl` | Data directory for SQLite DB |
 | `OPENTL_DOCKER_IMAGE` | No | `opentl-sandbox` | Sandbox Docker image |
 | `OPENTL_DOCKER_NETWORK` | No | `opentl-net` | Docker network name |
+| `OPENTL_MAX_REVISIONS` | No | `1` | Max review/revision rounds per sub-task |
+| `OPENTL_CHAT_IDLE_TIMEOUT` | No | `30m` | Idle timeout for persistent chat sandboxes |
+| `OPENTL_CHAT_MAX_MESSAGES` | No | `50` | Max user messages per chat session |
 | `OPENTL_SERVER` | No | `http://localhost:7080` | Server URL (for CLI) |
 
 ## Project Structure
@@ -162,10 +170,8 @@ OpenTL/
 ├── cmd/opentl/           CLI + server entry point
 ├── internal/
 │   ├── config/           Configuration from environment
-│   ├── decomposer/       Multi-step task decomposition
-│   ├── github/           GitHub API (PR creation)
-│   ├── indexer/          Repo-aware context indexing
-│   ├── orchestrator/     LLM-driven planning layer
+│   ├── github/           GitHub API + repo context indexing
+│   ├── orchestrator/     LLM planning, review, and decomposition
 │   ├── sandbox/          Docker container lifecycle
 │   ├── server/           HTTP API, session orchestration, SSE
 │   ├── session/          Session model, SQLite store, event bus
@@ -186,7 +192,7 @@ OpenTL/
 ### Phase 1 — MVP (current)
 
 - [x] Server with REST API and SSE streaming
-- [x] Docker sandbox with pluggable agents (Claude Code, Codex, OpenCode)
+- [x] Docker sandbox with pluggable agents (OpenCode, Codex)
 - [x] CLI (`run`, `list`, `status`, `logs`)
 - [x] GitHub PR creation
 - [x] Slack bot integration
@@ -195,9 +201,10 @@ OpenTL/
 
 ### Phase 2 — Intelligence
 
-- [ ] Plan-then-code-then-review prompt chain
-- [ ] Repo-aware context indexing
-- [ ] Multi-step task decomposition
+- [x] Plan-then-code-then-review prompt chain
+- [x] Repo-aware context indexing
+- [x] Multi-step task decomposition
+- [x] Review-revision loop with configurable max rounds
 
 ### Phase 3 — Scale
 
