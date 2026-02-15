@@ -65,24 +65,27 @@ emit_status "Dependencies installed"
 
 # --- Select and run coding agent ---
 # Agent selection priority:
-#   1. ANTHROPIC_API_KEY set → OpenCode with Claude Opus 4.6
+#   1. ANTHROPIC_API_KEY set → OpenCode (model configurable via TELECODER_AGENT_MODEL)
 #   2. OPENAI_API_KEY set   → Codex CLI
 #   3. Neither              → error
 
+# Default model for OpenCode when ANTHROPIC_API_KEY is set.
+AGENT_MODEL="${TELECODER_AGENT_MODEL:-anthropic/claude-opus-4-6}"
+
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    # --- OpenCode + Claude Opus 4.6 ---
-    emit_status "Configuring OpenCode with Claude Opus 4.6..."
+    # --- OpenCode ---
+    emit_status "Configuring OpenCode with ${AGENT_MODEL}..."
 
     # New OpenCode (npm: opencode-ai) uses opencode.json with "model": "provider/model" format.
     cat > /workspace/repo/opencode.json <<CFGEOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "anthropic/claude-opus-4-6"
+  "model": "${AGENT_MODEL}"
 }
 CFGEOF
 
-    emit_status "Running OpenCode (Claude Opus 4.6)..."
-    opencode run -m "anthropic/claude-opus-4-6" "${TELECODER_PROMPT}" 2>&1 || {
+    emit_status "Running OpenCode (${AGENT_MODEL})..."
+    opencode run -m "${AGENT_MODEL}" "${TELECODER_PROMPT}" 2>&1 || {
         EXIT_CODE=$?
         if [ $EXIT_CODE -ne 0 ]; then
             emit_error "OpenCode agent exited with code ${EXIT_CODE}"

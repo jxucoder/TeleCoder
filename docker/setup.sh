@@ -62,15 +62,17 @@ emit_status "Dependencies installed"
 # --- Configure coding agent ---
 emit_status "Configuring coding agent..."
 
+AGENT_MODEL="${TELECODER_AGENT_MODEL:-anthropic/claude-opus-4-6}"
+
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    # OpenCode + Claude Opus 4.6 config.
+    # OpenCode config.
     cat > /workspace/repo/opencode.json <<CFGEOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "anthropic/claude-opus-4-6"
+  "model": "${AGENT_MODEL}"
 }
 CFGEOF
-    emit_status "Agent: OpenCode (Claude Opus 4.6)"
+    emit_status "Agent: OpenCode (${AGENT_MODEL})"
 elif [ -n "${OPENAI_API_KEY:-}" ]; then
     emit_status "Agent: Codex CLI"
 fi

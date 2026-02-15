@@ -51,6 +51,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		sandboxEnv = append(sandboxEnv, "OPENAI_API_KEY="+v)
 	}
+	if v := os.Getenv("TELECODER_AGENT_MODEL"); v != "" {
+		sandboxEnv = append(sandboxEnv, "TELECODER_AGENT_MODEL="+v)
+	}
 
 	cfg := telecoder.Config{
 		ServerAddr:      envOrDefault("TELECODER_ADDR", ":7080"),
