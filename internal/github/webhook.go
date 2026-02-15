@@ -34,8 +34,10 @@ type WebhookEvent struct {
 }
 
 // ParseWebhook parses a GitHub webhook request into a WebhookEvent.
-// It supports "issue_comment" events on pull requests and
-// "pull_request_review_comment" events.
+// It supports:
+//   - "issue_comment" events on pull requests (general PR comments)
+//   - "pull_request_review_comment" events (inline code comments)
+//   - "pull_request_review" events (review submissions with "changes_requested" or "commented")
 //
 // If secret is non-empty, the request signature is verified.
 // Returns nil if the event is not a PR comment we care about.
@@ -63,6 +65,8 @@ func ParseWebhook(r *http.Request, secret string) (*WebhookEvent, error) {
 		return parseIssueComment(body)
 	case "pull_request_review_comment":
 		return parseReviewComment(body)
+	case "pull_request_review":
+		return parseReview(body)
 	default:
 		// Not an event we handle.
 		return nil, nil
@@ -148,6 +152,59 @@ func parseReviewComment(body []byte) (*WebhookEvent, error) {
 		CommentBody: payload.Comment.Body,
 		CommentUser: payload.Comment.User.Login,
 		CommentID:   payload.Comment.ID,
+	}, nil
+}
+
+func parseReview(body []byte) (*WebhookEvent, error) {
+	var payload struct {
+		Action string `json:"action"`
+		Review struct {
+			ID    int64  `json:"id"`
+			Body  string `json:"body"`
+			State string `json:"state"` // "approved", "changes_requested", "commented"
+			User  struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		} `json:"review"`
+		PullRequest struct {
+			Number int `json:"number"`
+		} `json:"pull_request"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+	}
+
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("parsing pull_request_review payload: %w", err)
+	}
+
+	// Only handle newly submitted reviews.
+	if payload.Action != "submitted" {
+		return nil, nil
+	}
+
+	// Only act on reviews that request changes or leave comments with a body.
+	// Approvals without feedback don't need agent action.
+	switch payload.Review.State {
+	case "changes_requested":
+		// Always act on "request changes" reviews.
+	case "commented":
+		// Only act if the review has a body (not just inline comments).
+		if strings.TrimSpace(payload.Review.Body) == "" {
+			return nil, nil
+		}
+	default:
+		// "approved" or other states — no action needed.
+		return nil, nil
+	}
+
+	return &WebhookEvent{
+		Action:      payload.Action,
+		Repo:        payload.Repository.FullName,
+		PRNumber:    payload.PullRequest.Number,
+		CommentBody: payload.Review.Body,
+		CommentUser: payload.Review.User.Login,
+		CommentID:   payload.Review.ID,
 	}, nil
 }
 
