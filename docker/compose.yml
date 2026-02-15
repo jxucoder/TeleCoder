@@ -1,7 +1,10 @@
-# OpenTL Development Environment
+# OpenTL Server
 #
-# Usage:
-#   docker compose -f docker/compose.yml up
+# Usage (from the project root):
+#   docker compose -f docker/compose.yml --env-file .env up -d
+#
+# Or simply:
+#   make docker-up
 #
 # This starts the OpenTL server. Sandbox containers are created
 # dynamically by the server when sessions are started.
@@ -16,21 +19,16 @@ services:
     volumes:
       - opentl-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - path: ../.env
+        required: false
+      - path: ${HOME}/.opentl/config.env
+        required: false
     environment:
       - OPENTL_ADDR=:7080
       - OPENTL_DATA_DIR=/data
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENTL_DOCKER_IMAGE=opentl-sandbox
       - OPENTL_DOCKER_NETWORK=opentl-net
-      # Slack integration (optional -- Socket Mode, no public URL needed).
-      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
-      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
-      - SLACK_DEFAULT_REPO=${SLACK_DEFAULT_REPO:-}
-      # Telegram integration (optional -- long polling, no public URL needed).
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_DEFAULT_REPO=${TELEGRAM_DEFAULT_REPO:-}
     networks:
       - opentl-net
     restart: unless-stopped

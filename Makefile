@@ -28,11 +28,11 @@ server-image:
 
 # Start everything with Docker Compose.
 docker-up: sandbox-image
-	docker compose -f docker/compose.yml up -d
+	docker compose -f docker/compose.yml --env-file .env up -d
 
 # Stop everything.
 docker-down:
-	docker compose -f docker/compose.yml down
+	docker compose -f docker/compose.yml --env-file .env down
 
 # Clean build artifacts.
 clean:

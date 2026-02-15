@@ -2,243 +2,44 @@
 #
 # OpenTL Deploy Script
 #
-# Run on any fresh Ubuntu/macOS machine:
+# One-command deployment for any fresh Ubuntu server (22.04+):
+#
 #   git clone https://github.com/jxucoder/opentl.git
 #   cd opentl
 #   ./deploy.sh
+#
+# The script will:
+#   1. Wait for apt locks to clear (fresh server auto-updates)
+#   2. Install Docker and Go if needed
+#   3. Build the opentl CLI
+#   4. Run interactive token setup (or read from existing config)
+#   5. Build the sandbox Docker image
+#   6. Start the server via Docker Compose
+#
+# For CI / non-interactive use, set tokens before running:
+#   export GITHUB_TOKEN=ghp_xxx
+#   export ANTHROPIC_API_KEY=sk-ant-xxx
+#   ./deploy.sh --non-interactive
 #
 set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+BOLD='\033[1m'
+NC='\033[0m'
 
 info()  { echo -e "${GREEN}[+]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[x]${NC} $1"; exit 1; }
+step()  { echo -e "\n${BOLD}── $1${NC}"; }
 
-REQUIRED_GO_VERSION="1.25.7"
-CONFIG_FILE="$HOME/.opentl/config.env"
+INTERACTIVE=true
+if [[ "${1:-}" == "--non-interactive" ]] || [[ "${1:-}" == "-y" ]]; then
+    INTERACTIVE=false
+fi
 
-# ──────────────────────────────────────────────────────────────
-# Helper: compare version strings.  Returns 0 if $1 >= $2.
-# ──────────────────────────────────────────────────────────────
-version_ge() {
-    # Returns 0 (true) if $1 >= $2 using sort -V.
-    [ "$(printf '%s\n%s' "$1" "$2" | sort -V | head -n1)" = "$2" ]
-}
-
-# ──────────────────────────────────────────────────────────────
-# 1. Check / Install Go
-# ──────────────────────────────────────────────────────────────
-check_go() {
-    if command -v go &> /dev/null; then
-        local current
-        current="$(go version | grep -oP 'go\K[0-9]+\.[0-9]+(\.[0-9]+)?' || true)"
-        if [ -n "$current" ] && version_ge "$current" "$REQUIRED_GO_VERSION"; then
-            info "Go $current found (>= $REQUIRED_GO_VERSION)"
-            return 0
-        else
-            warn "Go $current found but $REQUIRED_GO_VERSION or later is required"
-            return 1
-        fi
-    else
-        warn "Go is not installed"
-        return 1
-    fi
-}
-
-install_go() {
-    local go_version="$REQUIRED_GO_VERSION"
-    local os_name arch tarball url
-
-    os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
-    arch="$(uname -m)"
-
-    case "$arch" in
-        x86_64)  arch="amd64" ;;
-        aarch64|arm64) arch="arm64" ;;
-        *) error "Unsupported architecture: $arch" ;;
-    esac
-
-    case "$os_name" in
-        linux|darwin) ;;
-        *) error "Unsupported operating system: $os_name" ;;
-    esac
-
-    tarball="go${go_version}.${os_name}-${arch}.tar.gz"
-    url="https://go.dev/dl/${tarball}"
-
-    info "Downloading Go $go_version for ${os_name}/${arch}..."
-
-    local tmp
-    tmp="$(mktemp -d)"
-    if ! curl -fsSL -o "${tmp}/${tarball}" "$url"; then
-        rm -rf "$tmp"
-        error "Failed to download Go from $url"
-    fi
-
-    info "Installing Go to /usr/local/go..."
-    sudo rm -rf /usr/local/go
-    sudo tar -C /usr/local -xzf "${tmp}/${tarball}"
-    rm -rf "$tmp"
-
-    # Add to PATH for the rest of this script.
-    export PATH="/usr/local/go/bin:$PATH"
-
-    if ! command -v go &> /dev/null; then
-        error "Go installation failed — 'go' not found in PATH"
-    fi
-
-    local installed
-    installed="$(go version | grep -oP 'go\K[0-9]+\.[0-9]+(\.[0-9]+)?' || true)"
-    info "Go $installed installed successfully"
-
-    # Advise user to persist PATH if it is not already there.
-    if ! grep -q '/usr/local/go/bin' "$HOME/.profile" 2>/dev/null &&
-       ! grep -q '/usr/local/go/bin' "$HOME/.bashrc" 2>/dev/null; then
-        warn "Add Go to your PATH permanently by adding this to ~/.profile or ~/.bashrc:"
-        echo '  export PATH="/usr/local/go/bin:$PATH"'
-    fi
-}
-
-# ──────────────────────────────────────────────────────────────
-# 2. Build the opentl binary
-# ──────────────────────────────────────────────────────────────
-build_opentl() {
-    info "Building opentl binary..."
-    go build -o bin/opentl ./cmd/opentl
-    if [ ! -x bin/opentl ]; then
-        error "Build failed — bin/opentl not found"
-    fi
-    info "opentl binary built at bin/opentl"
-}
-
-# ──────────────────────────────────────────────────────────────
-# 3. Run opentl config setup (interactive wizard)
-# ──────────────────────────────────────────────────────────────
-setup_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        info "Existing configuration found at $CONFIG_FILE"
-        # Source the config so we can check required values.
-        set -a
-        source "$CONFIG_FILE"
-        set +a
-
-        # Quick validation: do we have the minimum required keys?
-        if [ -n "${GITHUB_TOKEN:-}" ] && { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; }; then
-            info "Configuration looks valid. Skipping setup wizard."
-            return 0
-        else
-            warn "Configuration is incomplete. Running setup wizard..."
-        fi
-    else
-        info "No configuration found. Running setup wizard..."
-    fi
-
-    ./bin/opentl config setup
-
-    # Verify the config file was created.
-    if [ ! -f "$CONFIG_FILE" ]; then
-        error "Config setup did not create $CONFIG_FILE. Cannot proceed."
-    fi
-}
-
-# ──────────────────────────────────────────────────────────────
-# 4. Load config into environment (for Docker Compose)
-# ──────────────────────────────────────────────────────────────
-load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        set -a
-        source "$CONFIG_FILE"
-        set +a
-    fi
-
-    # Final validation.
-    if [ -z "${GITHUB_TOKEN:-}" ]; then
-        error "GITHUB_TOKEN is not configured. Run: ./bin/opentl config setup"
-    fi
-    if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-        error "At least one of ANTHROPIC_API_KEY or OPENAI_API_KEY is required. Run: ./bin/opentl config setup"
-    fi
-
-    if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
-        info "Telegram bot token found"
-    else
-        warn "No TELEGRAM_BOT_TOKEN set — Telegram bot will be disabled"
-    fi
-}
-
-# ──────────────────────────────────────────────────────────────
-# 5. Install Docker if needed
-# ──────────────────────────────────────────────────────────────
-check_docker() {
-    if ! command -v docker &> /dev/null; then
-        info "Installing Docker..."
-        curl -fsSL https://get.docker.com | sh
-        sudo usermod -aG docker "$USER"
-        info "Docker installed. You may need to log out and back in for group changes."
-        # Use sudo for the rest of this script since the group change hasn't taken effect.
-        DOCKER="sudo docker"
-        COMPOSE="sudo docker compose"
-    else
-        info "Docker already installed"
-        DOCKER="docker"
-        COMPOSE="docker compose"
-    fi
-
-    # Ensure Docker is running.
-    if ! $DOCKER info &> /dev/null; then
-        info "Starting Docker..."
-        sudo systemctl start docker
-        sudo systemctl enable docker
-    fi
-}
-
-# ──────────────────────────────────────────────────────────────
-# 6. Build sandbox image & deploy
-# ──────────────────────────────────────────────────────────────
-deploy_services() {
-    info "Building sandbox image (this takes a few minutes on first run)..."
-    $DOCKER build -f docker/base.Dockerfile -t opentl-sandbox .
-
-    info "Starting OpenTL..."
-    $COMPOSE -f docker/compose.yml up -d --build
-}
-
-# ──────────────────────────────────────────────────────────────
-# 7. Verify deployment
-# ──────────────────────────────────────────────────────────────
-verify() {
-    echo ""
-    info "Waiting for server to start..."
-    sleep 3
-
-    if $DOCKER ps | grep -q opentl; then
-        echo ""
-        info "OpenTL is running!"
-        echo ""
-        echo "  Server:    http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):7080"
-        echo "  Health:    http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):7080/health"
-        echo ""
-        if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
-            echo "  Telegram:  Open your bot and send a message!"
-            echo ""
-        fi
-        echo "  Logs:      $COMPOSE -f docker/compose.yml logs -f"
-        echo "  Stop:      $COMPOSE -f docker/compose.yml down"
-        echo "  Restart:   $COMPOSE -f docker/compose.yml restart"
-        echo ""
-    else
-        warn "Container may not have started. Check logs:"
-        echo "  $COMPOSE -f docker/compose.yml logs"
-    fi
-}
-
-# ══════════════════════════════════════════════════════════════
-# Main
-# ══════════════════════════════════════════════════════════════
+GO_VERSION="1.25.7"
 
 echo ""
 echo "  ╔═══════════════════════════════════╗"
@@ -247,25 +48,200 @@ echo "  ║   Send a task, get a PR.          ║"
 echo "  ╚═══════════════════════════════════╝"
 echo ""
 
-# Step 1: Ensure Go is available.
-if ! check_go; then
-    install_go
+# --- 1. Wait for apt locks (fresh Ubuntu servers run auto-updates) ---
+
+step "Step 1/6 — Checking system"
+
+# Wait up to 120 seconds for apt locks to clear.
+WAIT_SECS=0
+while fuser /var/lib/dpkg/lock-frontend &>/dev/null 2>&1 || \
+      fuser /var/lib/apt/lists/lock &>/dev/null 2>&1; do
+    if [ $WAIT_SECS -eq 0 ]; then
+        info "Waiting for system updates to finish (this is normal on fresh servers)..."
+    fi
+    sleep 5
+    WAIT_SECS=$((WAIT_SECS + 5))
+    if [ $WAIT_SECS -ge 120 ]; then
+        warn "apt lock held for over 2 minutes. Continuing anyway..."
+        break
+    fi
+done
+
+if [ $WAIT_SECS -gt 0 ]; then
+    info "System ready (waited ${WAIT_SECS}s)"
+else
+    info "System ready"
 fi
 
-# Step 2: Build the opentl binary.
-build_opentl
+# --- 2. Install Docker ---
 
-# Step 3: Run interactive config setup (or skip if already configured).
-setup_config
+step "Step 2/6 — Docker"
 
-# Step 4: Load config into environment for Docker Compose.
-load_config
+if command -v docker &>/dev/null; then
+    info "Docker already installed ($(docker --version | head -1))"
+else
+    info "Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+    info "Docker installed"
+fi
 
-# Step 5: Ensure Docker is available.
-check_docker
+# Make sure Docker daemon is running.
+if ! docker info &>/dev/null 2>&1; then
+    if command -v systemctl &>/dev/null; then
+        info "Starting Docker daemon..."
+        sudo systemctl start docker
+        sudo systemctl enable docker
+    else
+        error "Docker is installed but the daemon is not running. Start it manually."
+    fi
+fi
 
-# Step 6: Build images and start services.
-deploy_services
+# --- 3. Install Go and build ---
 
-# Step 7: Verify everything is running.
-verify
+step "Step 3/6 — Building OpenTL"
+
+if ! command -v go &>/dev/null; then
+    ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+    case "$ARCH" in
+        amd64|x86_64) GOARCH="amd64" ;;
+        arm64|aarch64) GOARCH="arm64" ;;
+        *) error "Unsupported architecture: $ARCH" ;;
+    esac
+
+    info "Installing Go ${GO_VERSION} (${GOARCH})..."
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz" | tar -C /usr/local -xzf -
+    export PATH="/usr/local/go/bin:$PATH"
+
+    # Make it permanent.
+    if ! grep -q '/usr/local/go/bin' ~/.bashrc 2>/dev/null; then
+        echo 'export PATH="/usr/local/go/bin:$PATH"' >> ~/.bashrc
+    fi
+    info "Go installed"
+else
+    info "Go already installed ($(go version))"
+fi
+
+# Install make if missing.
+if ! command -v make &>/dev/null; then
+    info "Installing make..."
+    apt-get update -qq && apt-get install -y -qq make >/dev/null 2>&1
+fi
+
+info "Building opentl binary..."
+make build
+info "Build complete"
+
+# --- 4. Configure tokens ---
+
+step "Step 4/6 — Token Setup"
+
+if [ "$INTERACTIVE" = true ]; then
+    # Check if tokens are already configured.
+    if ./bin/opentl config show 2>/dev/null | grep -q "GITHUB_TOKEN.*not set"; then
+        info "Running interactive setup..."
+        ./bin/opentl config setup
+    else
+        info "Tokens already configured"
+        ./bin/opentl config show
+        echo ""
+        read -p "  Re-run setup? [y/N] " -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            ./bin/opentl config setup
+        fi
+    fi
+else
+    # Non-interactive: tokens must come from environment or existing config.
+    # Write env vars to config file if they're set.
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        ./bin/opentl config set GITHUB_TOKEN "$GITHUB_TOKEN"
+    fi
+    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        ./bin/opentl config set ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+    fi
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
+        ./bin/opentl config set OPENAI_API_KEY "$OPENAI_API_KEY"
+    fi
+    if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+        ./bin/opentl config set TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
+    fi
+    if [ -n "${SLACK_BOT_TOKEN:-}" ]; then
+        ./bin/opentl config set SLACK_BOT_TOKEN "$SLACK_BOT_TOKEN"
+    fi
+    if [ -n "${SLACK_APP_TOKEN:-}" ]; then
+        ./bin/opentl config set SLACK_APP_TOKEN "$SLACK_APP_TOKEN"
+    fi
+    info "Tokens configured from environment"
+fi
+
+# Validate that minimum tokens are present.
+if ./bin/opentl config show 2>/dev/null | grep -q "GITHUB_TOKEN.*not set"; then
+    error "GITHUB_TOKEN is required. Run: ./bin/opentl config setup"
+fi
+
+# Generate .env for Docker Compose (reads from ~/.opentl/config.env).
+CONFIG_FILE="$HOME/.opentl/config.env"
+if [ -f "$CONFIG_FILE" ]; then
+    cp "$CONFIG_FILE" .env
+    info "Generated .env from config"
+fi
+
+# --- 5. Build sandbox image ---
+
+step "Step 5/6 — Building Sandbox Image"
+
+info "This takes 3-5 minutes on first run..."
+make sandbox-image
+info "Sandbox image built"
+
+# --- 6. Start server ---
+
+step "Step 6/6 — Starting Server"
+
+docker compose -f docker/compose.yml --env-file .env up -d --build
+
+# Wait for server to start.
+info "Waiting for server..."
+for i in $(seq 1 15); do
+    if curl -sf http://localhost:7080/api/sessions >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+
+# --- Done ---
+
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+
+if curl -sf http://localhost:7080/api/sessions >/dev/null 2>&1; then
+    echo ""
+    echo -e "  ${GREEN}${BOLD}OpenTL is running!${NC}"
+    echo ""
+    echo "  Server:   http://${SERVER_IP}:7080"
+    echo ""
+    echo "  Run a task from this server:"
+    echo "    ./bin/opentl run \"your task\" --repo owner/repo"
+    echo ""
+    echo "  Run a task from your laptop:"
+    echo "    opentl --server http://${SERVER_IP}:7080 run \"your task\" --repo owner/repo"
+    echo ""
+
+    # Check for bot integrations.
+    if grep -q "TELEGRAM_BOT_TOKEN=" .env 2>/dev/null && \
+       ! grep -q "TELEGRAM_BOT_TOKEN=$" .env 2>/dev/null; then
+        echo "  Telegram:  Message your bot from your phone!"
+    fi
+    if grep -q "SLACK_BOT_TOKEN=" .env 2>/dev/null && \
+       ! grep -q "SLACK_BOT_TOKEN=$" .env 2>/dev/null; then
+        echo "  Slack:     @OpenTL in any channel"
+    fi
+
+    echo ""
+    echo "  Manage:"
+    echo "    Logs:     docker compose -f docker/compose.yml logs -f"
+    echo "    Stop:     docker compose -f docker/compose.yml down"
+    echo "    Update:   git pull && ./deploy.sh"
+    echo ""
+else
+    warn "Server may not have started. Check logs:"
+    echo "    docker compose -f docker/compose.yml logs"
+fi

@@ -6,7 +6,7 @@ Get a VPS, run one script, message your bot from your phone.
 
 ### 1. Get a Server
 
-Any VPS with 4GB+ RAM running Ubuntu 22.04+. Cheapest options:
+Any VPS with 2GB+ RAM running Ubuntu 22.04+:
 
 | Provider | Spec | Price | Link |
 |---|---|---|---|
@@ -21,35 +21,55 @@ When creating the server, choose **Ubuntu 24.04**. Add your SSH key.
 ```bash
 ssh root@YOUR_SERVER_IP
 
-# Clone the repo
 git clone https://github.com/jxucoder/opentl.git
 cd opentl
-
-# Set up your tokens
-cp .env.example .env
-nano .env   # fill in GITHUB_TOKEN, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
-
-# Deploy (installs Docker, builds images, starts everything)
 ./deploy.sh
 ```
 
-That's it. The script handles Docker installation, image building, and startup.
+That's it. The script handles everything:
+- Waits for Ubuntu's auto-updates to finish (common on fresh servers)
+- Installs Docker and Go
+- Builds the OpenTL binary
+- Runs interactive token setup (`opentl config setup`)
+- Builds the sandbox Docker image
+- Starts the server
 
-### 3. Message Your Bot
+### 3. Use It
 
-Open Telegram on your phone and send your bot a message:
-
+**From the server:**
+```bash
+./bin/opentl run "add rate limiting" --repo your-org/your-repo
 ```
-fix the broken login page --repo your-org/your-repo
+
+**From your laptop:**
+```bash
+opentl --server http://YOUR_SERVER_IP:7080 run "add rate limiting" --repo your-org/your-repo
 ```
+
+**From Telegram:** message your bot directly (if configured during setup).
+
+**From Slack:** `@OpenTL add rate limiting --repo your-org/your-repo`
 
 ## What You Need Before Deploying
 
-Gather these tokens before you start (takes ~5 minutes total):
+Gather these tokens (~5 minutes total):
 
-1. **GitHub Token** -- [github.com/settings/tokens](https://github.com/settings/tokens) (select `repo` scope)
-2. **Anthropic API Key** -- [console.anthropic.com](https://console.anthropic.com/settings/keys)
-3. **Telegram Bot Token** -- message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`, copy the token
+1. **GitHub Token** (required) -- [github.com/settings/tokens](https://github.com/settings/tokens) (select `repo` scope)
+2. **Anthropic API Key** or **OpenAI API Key** (at least one) -- [console.anthropic.com](https://console.anthropic.com/settings/keys) or [platform.openai.com](https://platform.openai.com/api-keys)
+3. **Telegram Bot Token** (optional) -- message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`, copy the token
+
+The deploy script will prompt you for each one interactively.
+
+## CI / Non-Interactive Deploy
+
+For automated deployments, set tokens via environment variables:
+
+```bash
+export GITHUB_TOKEN=ghp_xxx
+export ANTHROPIC_API_KEY=sk-ant-xxx
+export TELEGRAM_BOT_TOKEN=123:ABC
+./deploy.sh --non-interactive
+```
 
 ## Managing the Server
 
@@ -73,14 +93,24 @@ Each coding task spins up a Docker container. Rough sizing:
 
 | Concurrent Tasks | RAM Needed |
 |---|---|
-| 1 at a time | 4GB |
-| 2-3 at a time | 8GB |
+| 1 at a time | 2GB |
+| 2-3 at a time | 4-8GB |
 | 4+ at a time | 16GB |
 
-For personal use (one task at a time from Telegram), a 4GB server is fine.
+For personal use (one task at a time from Telegram), a 2GB server is fine.
 
 ## Security Notes
 
-- The server listens on port 7080 (HTTP API). You can firewall this if you don't need the web UI remotely.
-- The Telegram bot uses **outbound** long-polling -- no inbound ports needed for it.
-- Your `.env` contains secrets -- don't commit it to git (it's already in `.gitignore`).
+- The server listens on port 7080 (HTTP API). Firewall it if you don't need remote web access.
+- The Telegram bot uses **outbound** long-polling -- no inbound ports needed.
+- The Slack bot uses **outbound** Socket Mode -- no inbound ports needed.
+- Your tokens are stored in `~/.opentl/config.env` with `0600` permissions.
+- The `.env` file is already in `.gitignore`.
+
+### Firewall (optional, if you only use Telegram/Slack)
+
+```bash
+ufw allow 22        # SSH
+ufw deny 7080       # Block web API from outside
+ufw enable
+```
