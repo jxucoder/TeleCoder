@@ -135,8 +135,8 @@ cp .env.example .env
 | `TELECODER_DOCKER_IMAGE` | `telecoder-sandbox` | Sandbox Docker image name |
 | `TELECODER_MAX_REVISIONS` | `1` | Max review/revision rounds per sub-task |
 | `TELECODER_LLM_MODEL` | auto | Override the LLM model for pipeline stages (plan, review, decompose, verify) |
-| `TELECODER_AGENT` | `auto` | Primary coding agent: `opencode`, `claude-code`, `codex`, or `auto`. All agents are available in the sandbox as CLI tools. |
-| `TELECODER_AGENT_MODEL` | auto | Override the model used by the in-sandbox coding agent |
+| `TELECODER_CODING_AGENT` | `auto` | Primary coding agent: `opencode`, `claude-code`, `codex`, or `auto`. All agents are available in the sandbox as CLI tools. |
+| `TELECODER_CODING_AGENT_MODEL` | auto | Override the model used by the in-sandbox coding agent |
 | `TELECODER_SERVER` | `http://localhost:7080` | Server URL (used by the CLI when talking to a remote server) |
 
 For Slack, Telegram, and webhook configuration, see [docs/reference.md](docs/reference.md).
@@ -147,7 +147,7 @@ For Slack, Telegram, and webhook configuration, see [docs/reference.md](docs/ref
 make sandbox-image
 ```
 
-This builds the Docker image that runs the coding agent. It includes Ubuntu 24.04, Node 22, Python 3.12, Go, and all three agents pre-installed (OpenCode, Claude Code, Codex CLI). `TELECODER_AGENT` controls which one runs as the primary agent; the others remain available as CLI tools the agent can invoke.
+This builds the Docker image that runs the coding agent. It includes Ubuntu 24.04, Node 22, Python 3.12, Go, and all three agents pre-installed (OpenCode, Claude Code, Codex CLI). `TELECODER_CODING_AGENT` controls which one runs as the primary agent; the others remain available as CLI tools the agent can invoke.
 
 ### 4. Run
 

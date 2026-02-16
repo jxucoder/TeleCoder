@@ -164,7 +164,7 @@ The sandbox image (`docker/base.Dockerfile`) is Ubuntu 24.04 with Node 22, Pytho
 3. Configures git identity
 4. Creates feature branch
 5. Auto-detects and installs dependencies (npm/pnpm/yarn/pip/go)
-6. **Agent selection:** `TELECODER_AGENT` selects the agent (`opencode`, `claude-code`, `codex`). `auto` (default) falls back to API-key-based detection: ANTHROPIC_API_KEY → OpenCode, OPENAI_API_KEY → Codex CLI. Optional `TELECODER_AGENT_MODEL` overrides the model.
+6. **Agent selection:** `TELECODER_CODING_AGENT` selects the agent (`opencode`, `claude-code`, `codex`). `auto` (default) falls back to API-key-based detection: ANTHROPIC_API_KEY → OpenCode, OPENAI_API_KEY → Codex CLI. Optional `TELECODER_CODING_AGENT_MODEL` overrides the model.
 7. Commits, pushes, and signals completion
 
 Communication with the server uses marker-based protocols in stdout:
@@ -195,8 +195,8 @@ Key optional vars:
 - `TELECODER_CHAT_IDLE_TIMEOUT` — Chat inactivity timeout (default `30m`)
 - `TELECODER_CHAT_MAX_MESSAGES` — Max user messages per chat (default `50`)
 - `TELECODER_LLM_MODEL` — Override LLM model for pipeline stages (plan, review, decompose, verify)
-- `TELECODER_AGENT` — Coding agent: `opencode`, `claude-code`, `codex`, `auto` (default)
-- `TELECODER_AGENT_MODEL` — Override agent model inside sandbox
+- `TELECODER_CODING_AGENT` — Coding agent: `opencode`, `claude-code`, `codex`, `auto` (default)
+- `TELECODER_CODING_AGENT_MODEL` — Override coding agent model inside sandbox
 - `GITHUB_WEBHOOK_SECRET` — HMAC secret for webhook verification
 - `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` — Slack integration
 - `SLACK_DEFAULT_REPO` — Default repo for Slack commands

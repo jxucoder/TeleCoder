@@ -51,8 +51,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		sandboxEnv = append(sandboxEnv, "OPENAI_API_KEY="+v)
 	}
-	if v := os.Getenv("TELECODER_AGENT_MODEL"); v != "" {
-		sandboxEnv = append(sandboxEnv, "TELECODER_AGENT_MODEL="+v)
+	if v := os.Getenv("TELECODER_CODING_AGENT_MODEL"); v != "" {
+		sandboxEnv = append(sandboxEnv, "TELECODER_CODING_AGENT_MODEL="+v)
 	}
 
 	cfg := telecoder.Config{
@@ -65,7 +65,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		ChatIdleTimeout: envOrDurationDefault("TELECODER_CHAT_IDLE_TIMEOUT", 30*time.Minute),
 		ChatMaxMessages: envOrIntDefault("TELECODER_CHAT_MAX_MESSAGES", 50),
 		WebhookSecret:   os.Getenv("GITHUB_WEBHOOK_SECRET"),
-		Agent:           envOrDefault("TELECODER_AGENT", "auto"),
+		CodingAgent:     envOrDefault("TELECODER_CODING_AGENT", "auto"),
 	}
 
 	builder := telecoder.NewBuilder().WithConfig(cfg)

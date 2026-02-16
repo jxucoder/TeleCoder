@@ -63,10 +63,10 @@ type Config struct {
 	// WebhookSecret is the GitHub webhook HMAC secret.
 	WebhookSecret string
 
-	// Agent is the coding agent to run inside the sandbox.
+	// CodingAgent is the coding agent to run inside the sandbox.
 	// Valid values: "opencode", "claude-code", "codex", "auto" (default).
 	// "auto" selects based on API keys: ANTHROPIC_API_KEY → OpenCode, OPENAI_API_KEY → Codex.
-	Agent string
+	CodingAgent string
 }
 
 // Builder constructs a TeleCoder App.
@@ -161,7 +161,7 @@ func (b *Builder) Build() (*App, error) {
 			ChatIdleTimeout: b.config.ChatIdleTimeout,
 			ChatMaxMessages: b.config.ChatMaxMessages,
 			WebhookSecret:   b.config.WebhookSecret,
-			Agent:           b.config.Agent,
+			CodingAgent:     b.config.CodingAgent,
 		},
 		b.store,
 		b.bus,

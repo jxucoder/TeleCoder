@@ -103,8 +103,8 @@ All configuration is via environment variables.
 | `TELECODER_CHAT_IDLE_TIMEOUT` | No | `30m` | Idle timeout for persistent chat sandboxes |
 | `TELECODER_CHAT_MAX_MESSAGES` | No | `50` | Max user messages per chat session |
 | `TELECODER_LLM_MODEL` | No | — | Override LLM model for pipeline stages (plan, review, decompose, verify) |
-| `TELECODER_AGENT` | No | `auto` | Coding agent: `opencode`, `claude-code`, `codex`, or `auto` |
-| `TELECODER_AGENT_MODEL` | No | — | Override the LLM model used by the in-sandbox coding agent |
+| `TELECODER_CODING_AGENT` | No | `auto` | Coding agent: `opencode`, `claude-code`, `codex`, or `auto` |
+| `TELECODER_CODING_AGENT_MODEL` | No | — | Override the model used by the in-sandbox coding agent |
 | `TELECODER_SERVER` | No | `http://localhost:7080` | Server URL (for CLI) |
 
 ## Project Structure
@@ -178,5 +178,5 @@ TeleCoder/
 ### Phase 5 - Agent Selection
 
 - [x] Claude Code support in sandbox image
-- [x] `TELECODER_AGENT` explicit agent selection in entrypoint (`opencode`, `claude-code`, `codex`, `auto`)
+- [x] `TELECODER_CODING_AGENT` explicit agent selection in entrypoint (`opencode`, `claude-code`, `codex`, `auto`)
 - [x] Per-session agent override via API and CLI (`--agent` flag)

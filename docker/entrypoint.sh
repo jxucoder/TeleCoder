@@ -67,15 +67,15 @@ emit_status "Dependencies installed"
 
 run_opencode() {
     MODEL_ARGS=""
-    if [ -n "${TELECODER_AGENT_MODEL:-}" ]; then
-        MODEL_ARGS="-m ${TELECODER_AGENT_MODEL}"
+    if [ -n "${TELECODER_CODING_AGENT_MODEL:-}" ]; then
+        MODEL_ARGS="-m ${TELECODER_CODING_AGENT_MODEL}"
         cat > /workspace/repo/opencode.json <<CFGEOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "${TELECODER_AGENT_MODEL}"
+  "model": "${TELECODER_CODING_AGENT_MODEL}"
 }
 CFGEOF
-        emit_status "Running OpenCode (${TELECODER_AGENT_MODEL})..."
+        emit_status "Running OpenCode (${TELECODER_CODING_AGENT_MODEL})..."
     else
         emit_status "Running OpenCode..."
     fi
@@ -92,9 +92,9 @@ CFGEOF
 run_claude_code() {
     emit_status "Running Claude Code..."
     local CLAUDE_ARGS=""
-    if [ -n "${TELECODER_AGENT_MODEL:-}" ]; then
-        CLAUDE_ARGS="--model ${TELECODER_AGENT_MODEL}"
-        emit_status "Running Claude Code (${TELECODER_AGENT_MODEL})..."
+    if [ -n "${TELECODER_CODING_AGENT_MODEL:-}" ]; then
+        CLAUDE_ARGS="--model ${TELECODER_CODING_AGENT_MODEL}"
+        emit_status "Running Claude Code (${TELECODER_CODING_AGENT_MODEL})..."
     fi
 
     claude ${CLAUDE_ARGS} --print "${TELECODER_PROMPT}" 2>&1 || {
@@ -122,13 +122,13 @@ run_codex() {
 
 # --- Select and run coding agent ---
 # Agent selection:
-#   TELECODER_AGENT explicitly selects the agent ("opencode", "claude-code", "codex").
+#   TELECODER_CODING_AGENT explicitly selects the agent ("opencode", "claude-code", "codex").
 #   "auto" (default) falls back to API-key-based detection:
 #     1. ANTHROPIC_API_KEY set → OpenCode
 #     2. OPENAI_API_KEY set   → Codex CLI
 #     3. Neither              → error
 
-case "${TELECODER_AGENT:-auto}" in
+case "${TELECODER_CODING_AGENT:-auto}" in
     opencode)
         run_opencode
         ;;
@@ -149,7 +149,7 @@ case "${TELECODER_AGENT:-auto}" in
         fi
         ;;
     *)
-        emit_error "Unknown agent: ${TELECODER_AGENT}. Supported: opencode, claude-code, codex, auto."
+        emit_error "Unknown agent: ${TELECODER_CODING_AGENT}. Supported: opencode, claude-code, codex, auto."
         exit 1
         ;;
 esac

@@ -431,7 +431,7 @@ func TestE2E_AgentOverrideReachesSandbox(t *testing.T) {
 	found := false
 	for _, s := range starts {
 		for _, env := range s.Env {
-			if env == "TELECODER_AGENT=claude-code" {
+			if env == "TELECODER_CODING_AGENT=claude-code" {
 				found = true
 			}
 		}
@@ -441,7 +441,7 @@ func TestE2E_AgentOverrideReachesSandbox(t *testing.T) {
 		for _, s := range starts {
 			envs = append(envs, fmt.Sprintf("%v", s.Env))
 		}
-		t.Fatalf("TELECODER_AGENT=claude-code not found in sandbox envs: %v", envs)
+		t.Fatalf("TELECODER_CODING_AGENT=claude-code not found in sandbox envs: %v", envs)
 	}
 	t.Log("Agent override claude-code reached sandbox env")
 }

@@ -271,7 +271,7 @@ func TestResolveAgentName_SessionOverride(t *testing.T) {
 
 func TestResolveAgentName_DefaultAgent(t *testing.T) {
 	eng, _, _ := testEngine(t)
-	eng.config.Agent = "opencode"
+	eng.config.CodingAgent = "opencode"
 
 	got := eng.resolveAgentName("")
 	if got != "opencode" {
@@ -281,7 +281,7 @@ func TestResolveAgentName_DefaultAgent(t *testing.T) {
 
 func TestResolveAgentName_AutoReturnsEmpty(t *testing.T) {
 	eng, _, _ := testEngine(t)
-	eng.config.Agent = "auto"
+	eng.config.CodingAgent = "auto"
 
 	got := eng.resolveAgentName("")
 	if got != "" {
@@ -296,7 +296,7 @@ func TestResolveAgentName_AutoReturnsEmpty(t *testing.T) {
 
 func TestResolveAgentName_SessionOverridesDefault(t *testing.T) {
 	eng, _, _ := testEngine(t)
-	eng.config.Agent = "opencode"
+	eng.config.CodingAgent = "opencode"
 
 	// Session override takes priority.
 	got := eng.resolveAgentName("claude-code")
@@ -356,7 +356,7 @@ func TestRunSandboxRoundWithAgent_PassesAgentEnv(t *testing.T) {
 			ChatIdleTimeout: 30 * time.Minute,
 			ChatMaxMessages: 50,
 			SandboxEnv:      []string{"GITHUB_TOKEN=abc"},
-			Agent:           "claude-code",
+			CodingAgent:     "claude-code",
 		},
 		st, bus, capSb, git,
 		pipeline.NewPlanStage(llmClient, ""),
@@ -387,12 +387,12 @@ func TestRunSandboxRoundWithAgent_PassesAgentEnv(t *testing.T) {
 
 	foundAgent := false
 	for _, e := range capSb.lastOpts.Env {
-		if e == "TELECODER_AGENT=claude-code" {
+		if e == "TELECODER_CODING_AGENT=claude-code" {
 			foundAgent = true
 		}
 	}
 	if !foundAgent {
-		t.Fatalf("expected TELECODER_AGENT=claude-code in sandbox env, got %v", capSb.lastOpts.Env)
+		t.Fatalf("expected TELECODER_CODING_AGENT=claude-code in sandbox env, got %v", capSb.lastOpts.Env)
 	}
 }
 

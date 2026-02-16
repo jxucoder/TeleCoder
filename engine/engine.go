@@ -31,9 +31,9 @@ type Config struct {
 	ChatMaxMessages int
 	WebhookSecret   string
 
-	// Agent is the coding agent to run inside the sandbox.
+	// CodingAgent is the coding agent to run inside the sandbox.
 	// "opencode", "claude-code", "codex", or "auto" (default).
-	Agent string
+	CodingAgent string
 }
 
 // Engine orchestrates TeleCoder session lifecycle.
@@ -439,8 +439,8 @@ func (e *Engine) resolveAgentName(sessionAgent string) string {
 	if sessionAgent != "" && sessionAgent != "auto" {
 		return sessionAgent
 	}
-	if e.config.Agent != "" && e.config.Agent != "auto" {
-		return e.config.Agent
+	if e.config.CodingAgent != "" && e.config.CodingAgent != "auto" {
+		return e.config.CodingAgent
 	}
 	return ""
 }
@@ -675,7 +675,7 @@ func (e *Engine) runSandboxRoundWithAgent(ctx context.Context, sess *model.Sessi
 
 	agentName := e.resolveAgentName(sessionAgent)
 	if agentName != "" {
-		sandboxEnv = append(sandboxEnv, "TELECODER_AGENT="+agentName)
+		sandboxEnv = append(sandboxEnv, "TELECODER_CODING_AGENT="+agentName)
 	}
 
 	containerID, err := e.sandbox.Start(ctx, sandbox.StartOptions{

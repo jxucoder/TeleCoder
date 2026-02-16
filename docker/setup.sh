@@ -63,14 +63,14 @@ emit_status "Dependencies installed"
 emit_status "Configuring coding agent..."
 
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    if [ -n "${TELECODER_AGENT_MODEL:-}" ]; then
+    if [ -n "${TELECODER_CODING_AGENT_MODEL:-}" ]; then
         cat > /workspace/repo/opencode.json <<CFGEOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "${TELECODER_AGENT_MODEL}"
+  "model": "${TELECODER_CODING_AGENT_MODEL}"
 }
 CFGEOF
-        emit_status "Agent: OpenCode (${TELECODER_AGENT_MODEL})"
+        emit_status "Agent: OpenCode (${TELECODER_CODING_AGENT_MODEL})"
     else
         emit_status "Agent: OpenCode"
     fi
