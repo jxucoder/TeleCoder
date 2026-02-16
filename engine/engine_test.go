@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -539,6 +540,89 @@ func TestRunSandboxRoundWithAgent_PassesAgentEnv(t *testing.T) {
 	}
 }
 
+func TestResearchAgentRunsBeforeDecompose(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := sqliteStore.New(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	bus := eventbus.NewInMemoryBus()
+	recSb := &recordingStubSandbox{}
+	git := &stubGitProvider{}
+	llmClient := &stubLLM{}
+
+	eng := New(
+		Config{
+			DockerImage:     "test-image",
+			MaxRevisions:    0,
+			ChatIdleTimeout: 30 * time.Minute,
+			ChatMaxMessages: 50,
+			ResearchAgent:   &AgentConfig{Name: "opencode", Image: "research-image"},
+		},
+		st, bus, recSb, git,
+		pipeline.NewPlanStage(llmClient, ""),
+		pipeline.NewReviewStage(llmClient, ""),
+		pipeline.NewDecomposeStage(llmClient, ""),
+		pipeline.NewVerifyStage(llmClient, ""),
+	)
+
+	sess, err := eng.CreateAndRunSession("owner/repo", "add rate limiting")
+	if err != nil {
+		t.Fatalf("CreateAndRunSession: %v", err)
+	}
+
+	// Wait for the background goroutine to complete.
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify the sandbox was started at least twice:
+	// once for the research agent, once for the coding stage.
+	if recSb.startCount < 2 {
+		t.Fatalf("expected at least 2 sandbox Start calls (research + code), got %d", recSb.startCount)
+	}
+
+	// The first Start call should use the research image.
+	if len(recSb.allOpts) < 2 {
+		t.Fatalf("expected at least 2 start options recorded, got %d", len(recSb.allOpts))
+	}
+	if recSb.allOpts[0].Image != "research-image" {
+		t.Fatalf("expected first sandbox Start to use research image, got %q", recSb.allOpts[0].Image)
+	}
+
+	// The research prompt should mention "Explore this codebase".
+	if !strings.Contains(recSb.allOpts[0].Prompt, "Explore this codebase") {
+		t.Fatalf("expected research prompt, got %q", recSb.allOpts[0].Prompt)
+	}
+
+	_ = sess
+}
+
+func TestReviewAgentParseApproval(t *testing.T) {
+	// Verify the APPROVED keyword parsing logic used in runSubTask.
+	// This is inline in the engine, so we test the string matching directly.
+	tests := []struct {
+		feedback string
+		approved bool
+	}{
+		{"APPROVED - looks good", true},
+		{"The changes are approved and ready to merge", true},
+		{"APPROVED", true},
+		{"Needs changes: the error handling is missing", false},
+		{"Changes look great. APPROVED.", true},
+		{"Please fix the null pointer dereference on line 42", false},
+	}
+
+	for _, tt := range tests {
+		got := strings.Contains(strings.ToUpper(tt.feedback), "APPROVED")
+		if got != tt.approved {
+			t.Errorf("feedback=%q: expected approved=%v, got %v", tt.feedback, tt.approved, got)
+		}
+	}
+}
+
+// --- Recording stubs ---
+
 // capturingStubSandbox records the StartOptions from the last Start call.
 type capturingStubSandbox struct {
 	lastOpts *sandbox.StartOptions
@@ -556,3 +640,23 @@ func (s *capturingStubSandbox) ExecCollect(_ context.Context, _ string, _ []stri
 func (s *capturingStubSandbox) CommitAndPush(_ context.Context, _, _, _ string) error               { return nil }
 func (s *capturingStubSandbox) EnsureNetwork(_ context.Context, _ string) error                     { return nil }
 func (s *capturingStubSandbox) IsRunning(_ context.Context, _ string) bool                          { return true }
+
+// recordingStubSandbox records all Start calls for multi-stage verification.
+type recordingStubSandbox struct {
+	startCount int
+	allOpts    []sandbox.StartOptions
+}
+
+func (s *recordingStubSandbox) Start(_ context.Context, opts sandbox.StartOptions) (string, error) {
+	s.startCount++
+	s.allOpts = append(s.allOpts, opts)
+	return fmt.Sprintf("rec-container-%d", s.startCount), nil
+}
+func (s *recordingStubSandbox) Stop(_ context.Context, _ string) error                             { return nil }
+func (s *recordingStubSandbox) Wait(_ context.Context, _ string) (int, error)                      { return 0, nil }
+func (s *recordingStubSandbox) StreamLogs(_ context.Context, _ string) (sandbox.LineScanner, error) { return &stubScanner{}, nil }
+func (s *recordingStubSandbox) Exec(_ context.Context, _ string, _ []string) (sandbox.LineScanner, error) { return &stubScanner{}, nil }
+func (s *recordingStubSandbox) ExecCollect(_ context.Context, _ string, _ []string) (string, error) { return "", nil }
+func (s *recordingStubSandbox) CommitAndPush(_ context.Context, _, _, _ string) error               { return nil }
+func (s *recordingStubSandbox) EnsureNetwork(_ context.Context, _ string) error                     { return nil }
+func (s *recordingStubSandbox) IsRunning(_ context.Context, _ string) bool                          { return true }

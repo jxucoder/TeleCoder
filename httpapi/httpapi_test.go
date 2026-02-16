@@ -356,6 +356,70 @@ func TestPromptTooLong(t *testing.T) {
 	}
 }
 
+func TestCreateTaskSessionWithAgent(t *testing.T) {
+	eng := testEngine(t)
+	h := New(eng)
+
+	// Create a session with an explicit agent.
+	body := `{"repo":"owner/repo","prompt":"fix the bug","agent":"claude-code"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var created createSessionResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	// Retrieve the session and verify the agent field persisted.
+	req = httptest.NewRequest(http.MethodGet, "/api/sessions/"+created.ID, nil)
+	w = httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var sess model.Session
+	json.NewDecoder(w.Body).Decode(&sess)
+	if sess.Agent != "claude-code" {
+		t.Fatalf("expected agent 'claude-code', got %q", sess.Agent)
+	}
+}
+
+func TestCreateTaskSessionWithoutAgent(t *testing.T) {
+	eng := testEngine(t)
+	h := New(eng)
+
+	// Create a session without specifying an agent.
+	body := `{"repo":"owner/repo","prompt":"fix the bug"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var created createSessionResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	// Retrieve the session — agent should be empty (default).
+	req = httptest.NewRequest(http.MethodGet, "/api/sessions/"+created.ID, nil)
+	w = httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	var sess model.Session
+	json.NewDecoder(w.Body).Decode(&sess)
+	if sess.Agent != "" {
+		t.Fatalf("expected empty agent, got %q", sess.Agent)
+	}
+}
+
 func TestIsValidRepo(t *testing.T) {
 	tests := []struct {
 		input string
