@@ -103,10 +103,10 @@ func applyDefaults(b *Builder) error {
 // Returns nil if no API key is found.
 func llmClientFromEnv() llm.Client {
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		return llmAnthropic.New(key, os.Getenv("TELECODER_PLANNER_MODEL"))
+		return llmAnthropic.New(key, os.Getenv("TELECODER_LLM_MODEL"))
 	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		return llmOpenAI.New(key, os.Getenv("TELECODER_PLANNER_MODEL"))
+		return llmOpenAI.New(key, os.Getenv("TELECODER_LLM_MODEL"))
 	}
 	return nil
 }

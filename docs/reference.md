@@ -102,7 +102,7 @@ All configuration is via environment variables.
 | `TELECODER_MAX_REVISIONS` | No | `1` | Max review/revision rounds per sub-task |
 | `TELECODER_CHAT_IDLE_TIMEOUT` | No | `30m` | Idle timeout for persistent chat sandboxes |
 | `TELECODER_CHAT_MAX_MESSAGES` | No | `50` | Max user messages per chat session |
-| `TELECODER_PLANNER_MODEL` | No | — | Override LLM model for pipeline stages |
+| `TELECODER_LLM_MODEL` | No | — | Override LLM model for pipeline stages (plan, review, decompose, verify) |
 | `TELECODER_AGENT` | No | `auto` | Coding agent: `opencode`, `claude-code`, `codex`, or `auto` |
 | `TELECODER_AGENT_MODEL` | No | — | Override the LLM model used by the in-sandbox coding agent |
 | `TELECODER_SERVER` | No | `http://localhost:7080` | Server URL (for CLI) |

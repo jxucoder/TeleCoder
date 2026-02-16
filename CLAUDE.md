@@ -194,7 +194,7 @@ Key optional vars:
 - `TELECODER_MAX_REVISIONS` — Review/revision rounds (default `1`)
 - `TELECODER_CHAT_IDLE_TIMEOUT` — Chat inactivity timeout (default `30m`)
 - `TELECODER_CHAT_MAX_MESSAGES` — Max user messages per chat (default `50`)
-- `TELECODER_PLANNER_MODEL` — Override LLM model for planning stages
+- `TELECODER_LLM_MODEL` — Override LLM model for pipeline stages (plan, review, decompose, verify)
 - `TELECODER_AGENT` — Coding agent: `opencode`, `claude-code`, `codex`, `auto` (default)
 - `TELECODER_AGENT_MODEL` — Override agent model inside sandbox
 - `GITHUB_WEBHOOK_SECRET` — HMAC secret for webhook verification

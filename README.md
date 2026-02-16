@@ -134,7 +134,7 @@ cp .env.example .env
 | `TELECODER_ADDR` | `:7080` | Server listen address |
 | `TELECODER_DOCKER_IMAGE` | `telecoder-sandbox` | Sandbox Docker image name |
 | `TELECODER_MAX_REVISIONS` | `1` | Max review/revision rounds per sub-task |
-| `TELECODER_PLANNER_MODEL` | auto | Override the LLM model used for plan/review pipeline stages |
+| `TELECODER_LLM_MODEL` | auto | Override the LLM model for pipeline stages (plan, review, decompose, verify) |
 | `TELECODER_AGENT` | `auto` | Primary coding agent: `opencode`, `claude-code`, `codex`, or `auto`. All agents are available in the sandbox as CLI tools. |
 | `TELECODER_AGENT_MODEL` | auto | Override the model used by the in-sandbox coding agent |
 | `TELECODER_SERVER` | `http://localhost:7080` | Server URL (used by the CLI when talking to a remote server) |
