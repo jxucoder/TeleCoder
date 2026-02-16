@@ -63,14 +63,9 @@ fi
 
 emit_status "Dependencies installed"
 
-# --- Select and run coding agent ---
-# Agent selection priority:
-#   1. ANTHROPIC_API_KEY set → OpenCode (auto-detects model, or override via TELECODER_AGENT_MODEL)
-#   2. OPENAI_API_KEY set   → Codex CLI
-#   3. Neither              → error
+# --- Agent runner functions ---
 
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    # --- OpenCode ---
+run_opencode() {
     MODEL_ARGS=""
     if [ -n "${TELECODER_AGENT_MODEL:-}" ]; then
         MODEL_ARGS="-m ${TELECODER_AGENT_MODEL}"
@@ -92,9 +87,26 @@ CFGEOF
             exit $EXIT_CODE
         fi
     }
+}
 
-elif [ -n "${OPENAI_API_KEY:-}" ]; then
-    # --- Codex CLI ---
+run_claude_code() {
+    emit_status "Running Claude Code..."
+    local CLAUDE_ARGS=""
+    if [ -n "${TELECODER_AGENT_MODEL:-}" ]; then
+        CLAUDE_ARGS="--model ${TELECODER_AGENT_MODEL}"
+        emit_status "Running Claude Code (${TELECODER_AGENT_MODEL})..."
+    fi
+
+    claude ${CLAUDE_ARGS} --print "${TELECODER_PROMPT}" 2>&1 || {
+        EXIT_CODE=$?
+        if [ $EXIT_CODE -ne 0 ]; then
+            emit_error "Claude Code agent exited with code ${EXIT_CODE}"
+            exit $EXIT_CODE
+        fi
+    }
+}
+
+run_codex() {
     emit_status "Running Codex CLI..."
     codex exec \
         --full-auto \
@@ -106,11 +118,41 @@ elif [ -n "${OPENAI_API_KEY:-}" ]; then
             exit $EXIT_CODE
         fi
     }
+}
 
-else
-    emit_error "No LLM API key set. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
-    exit 1
-fi
+# --- Select and run coding agent ---
+# Agent selection:
+#   TELECODER_AGENT explicitly selects the agent ("opencode", "claude-code", "codex").
+#   "auto" (default) falls back to API-key-based detection:
+#     1. ANTHROPIC_API_KEY set → OpenCode
+#     2. OPENAI_API_KEY set   → Codex CLI
+#     3. Neither              → error
+
+case "${TELECODER_AGENT:-auto}" in
+    opencode)
+        run_opencode
+        ;;
+    claude-code)
+        run_claude_code
+        ;;
+    codex)
+        run_codex
+        ;;
+    auto)
+        if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            run_opencode
+        elif [ -n "${OPENAI_API_KEY:-}" ]; then
+            run_codex
+        else
+            emit_error "No LLM API key set. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
+            exit 1
+        fi
+        ;;
+    *)
+        emit_error "Unknown agent: ${TELECODER_AGENT}. Supported: opencode, claude-code, codex, auto."
+        exit 1
+        ;;
+esac
 
 emit_status "Agent finished"
 

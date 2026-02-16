@@ -70,6 +70,7 @@ type createSessionRequest struct {
 	Repo   string `json:"repo"`
 	Prompt string `json:"prompt"`
 	Mode   string `json:"mode,omitempty"`
+	Agent  string `json:"agent,omitempty"`
 }
 
 type createSessionResponse struct {
@@ -142,7 +143,7 @@ func (h *Handler) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "prompt is required for task mode")
 			return
 		}
-		sess, err := h.engine.CreateAndRunSession(req.Repo, req.Prompt)
+		sess, err := h.engine.CreateAndRunSessionWithAgent(req.Repo, req.Prompt, req.Agent)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create session")
 			log.Printf("Error creating session: %v", err)

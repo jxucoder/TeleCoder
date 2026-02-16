@@ -51,6 +51,9 @@ RUN npm install -g @openai/codex
 #    The actively maintained version is the npm package, not the old Go module.
 RUN npm install -g opencode-ai@latest
 
+# 3. Claude Code (Anthropic) — used when TELECODER_AGENT=claude-code.
+RUN npm install -g @anthropic-ai/claude-code
+
 # Create workspace directory.
 WORKDIR /workspace
 
@@ -71,7 +74,8 @@ USER telecoder
 #   TELECODER_REPO        - Repository (owner/repo)
 #   TELECODER_PROMPT      - Task prompt
 #   TELECODER_BRANCH      - Git branch name
-#   TELECODER_AGENT_MODEL - Override OpenCode model (optional, auto-detects if unset)
+#   TELECODER_AGENT       - Agent to use: "opencode", "claude-code", "codex", "auto" (default)
+#   TELECODER_AGENT_MODEL - Override agent model (optional, auto-detects if unset)
 #   GITHUB_TOKEN       - GitHub access token
 #   ANTHROPIC_API_KEY  - Anthropic API key (optional)
 #   OPENAI_API_KEY     - OpenAI API key (optional)

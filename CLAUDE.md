@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-TeleCoder is an extensible open-source background coding agent framework for engineering teams. Users send a task and get a PR back. It runs AI coding agents (OpenCode/Codex) inside Docker sandboxes that clone a repo, apply changes, push a branch, and create a GitHub pull request.
+TeleCoder is an extensible open-source background coding agent framework for engineering teams. Users send a task and get a PR back. It runs AI coding agents (OpenCode, Claude Code, Codex) inside Docker sandboxes that clone a repo, apply changes, push a branch, and create a GitHub pull request.
 
 TeleCoder is designed as a **pluggable framework**: developers import it as a Go library and compose a custom application by swapping any component via interfaces (store, sandbox, git provider, LLM, pipeline stages, channels).
 
@@ -133,9 +133,9 @@ _examples/minimal/        # Minimal framework usage example
 
 ### Key Packages
 
-- **`telecoder.go`** — Builder pattern entry point. `NewBuilder().Build()` wires all components. Config struct holds ServerAddr, DataDir, DatabasePath, DockerImage, DockerNetwork, SandboxEnv, MaxRevisions, ChatIdleTimeout, ChatMaxMessages, WebhookSecret.
+- **`telecoder.go`** — Builder pattern entry point. `NewBuilder().Build()` wires all components. Config struct holds ServerAddr, DataDir, DatabasePath, DockerImage, DockerNetwork, SandboxEnv, MaxRevisions, ChatIdleTimeout, ChatMaxMessages, WebhookSecret, Agent, ResearchAgent, CodeAgent, ReviewAgent. `AgentConfig` type holds Name, Image, Model for per-stage agent configuration.
 - **`defaults.go`** — Auto-detects LLM keys (prioritizes Anthropic over OpenAI), creates default store/bus/sandbox/pipeline stages including verify.
-- **`engine/`** — Session orchestration: CreateAndRunSession, CreateChatSession, SendChatMessage, CreatePRFromChat, CreatePRCommentSession, sandbox lifecycle, decompose→plan→code→verify→review loops with revision rounds.
+- **`engine/`** — Session orchestration: CreateAndRunSession, CreateAndRunSessionWithAgent, CreateChatSession, SendChatMessage, CreatePRFromChat, CreatePRCommentSession, sandbox lifecycle, decompose→plan→code→verify→review loops with revision rounds. Multi-agent support: `runAgentStage()` starts a sandbox with a specific agent for research/review stages, `resolveAgentName()` resolves per-session agent overrides, `agentEnv()` builds sandbox env vars.
 - **`httpapi/`** — HTTP API handler using Chi router, delegates all logic to engine. Includes GitHub webhook handler.
 - **`pipeline/`** — LLM pipeline stages:
   - **PlanStage** — Generates structured plan from task + codebase context
@@ -157,14 +157,14 @@ _examples/minimal/        # Minimal framework usage example
 
 ### Docker Sandbox
 
-The sandbox image (`docker/base.Dockerfile`) is Ubuntu 24.04 with Node 22, Python 3.12, Go 1.23.4, and pre-installed AI agents (OpenCode, Codex CLI). The entrypoint (`docker/entrypoint.sh`) handles:
+The sandbox image (`docker/base.Dockerfile`) is Ubuntu 24.04 with Node 22, Python 3.12, Go 1.23.4, and pre-installed AI agents (OpenCode, Claude Code, Codex CLI). The entrypoint (`docker/entrypoint.sh`) handles:
 
 1. Validates environment (TELECODER_REPO, TELECODER_PROMPT, TELECODER_BRANCH, GITHUB_TOKEN)
 2. Clones repo with `--depth=1`
 3. Configures git identity
 4. Creates feature branch
 5. Auto-detects and installs dependencies (npm/pnpm/yarn/pip/go)
-6. **Agent selection:** ANTHROPIC_API_KEY → OpenCode (with optional TELECODER_AGENT_MODEL override), else OPENAI_API_KEY → Codex CLI
+6. **Agent selection:** `TELECODER_AGENT` explicitly selects the agent (`opencode`, `claude-code`, `codex`). `auto` (default) falls back to API-key-based detection: ANTHROPIC_API_KEY → OpenCode, OPENAI_API_KEY → Codex CLI. Supports optional `TELECODER_AGENT_MODEL` override.
 7. Commits, pushes, and signals completion
 
 Communication with the server uses marker-based protocols in stdout:
@@ -195,7 +195,11 @@ Key optional vars:
 - `TELECODER_CHAT_IDLE_TIMEOUT` — Chat inactivity timeout (default `30m`)
 - `TELECODER_CHAT_MAX_MESSAGES` — Max user messages per chat (default `50`)
 - `TELECODER_PLANNER_MODEL` — Override LLM model for planning stages
+- `TELECODER_AGENT` — Default coding agent: `opencode`, `claude-code`, `codex`, `auto` (default)
 - `TELECODER_AGENT_MODEL` — Override agent model inside sandbox
+- `TELECODER_RESEARCH_AGENT` — Agent for codebase research before planning (e.g. `opencode`)
+- `TELECODER_CODE_AGENT` — Override the coding-stage agent (e.g. `claude-code`)
+- `TELECODER_REVIEW_AGENT` — Agent for code review instead of LLM-only review (e.g. `codex`)
 - `GITHUB_WEBHOOK_SECRET` — HMAC secret for webhook verification
 - `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` — Slack integration
 - `SLACK_DEFAULT_REPO` — Default repo for Slack commands
@@ -209,11 +213,12 @@ Config file: `~/.telecoder/config.env` (loaded by `serve` command).
 - Tests use real SQLite databases in temp directories (cleaned up via `t.Cleanup`)
 - Pipeline tests use fake LLM clients (`fakeLLM`) that return canned responses
 - Sandbox pool tests use a mock Runtime to verify pre-warming, claiming, and refilling behavior
-- Test files: `pipeline/pipeline_test.go`, `store/sqlite/sqlite_test.go`, `eventbus/eventbus_test.go`, `sandbox/pool_test.go`
+- Engine tests use stubs for sandbox, git, and LLM to verify session lifecycle, agent selection, and event dispatch
+- Test files: `pipeline/pipeline_test.go`, `store/sqlite/sqlite_test.go`, `eventbus/eventbus_test.go`, `sandbox/pool_test.go`, `engine/engine_test.go`
 
 ## API Endpoints
 
-- `POST /api/sessions` — create session (task or chat mode)
+- `POST /api/sessions` — create session (task or chat mode, optional `agent` field for per-session override)
 - `GET /api/sessions` — list sessions
 - `GET /api/sessions/{id}` — get session
 - `GET /api/sessions/{id}/events` — SSE event stream

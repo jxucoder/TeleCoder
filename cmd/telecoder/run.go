@@ -14,7 +14,8 @@ import (
 )
 
 var (
-	runRepo string
+	runRepo  string
+	runAgent string
 )
 
 var runCmd = &cobra.Command{
@@ -31,6 +32,7 @@ Example:
 
 func init() {
 	runCmd.Flags().StringVarP(&runRepo, "repo", "r", "", "GitHub repository (owner/repo)")
+	runCmd.Flags().StringVarP(&runAgent, "agent", "a", "", "Coding agent to use (opencode, claude-code, codex)")
 	runCmd.MarkFlagRequired("repo")
 	rootCmd.AddCommand(runCmd)
 }
@@ -39,10 +41,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 	prompt := args[0]
 
 	// Create session.
-	body, _ := json.Marshal(map[string]string{
+	reqPayload := map[string]string{
 		"repo":   runRepo,
 		"prompt": prompt,
-	})
+	}
+	if runAgent != "" {
+		reqPayload["agent"] = runAgent
+	}
+	body, _ := json.Marshal(reqPayload)
 
 	resp, err := http.Post(serverURL+"/api/sessions", "application/json", bytes.NewReader(body))
 	if err != nil {

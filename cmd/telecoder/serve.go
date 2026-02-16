@@ -65,6 +65,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 		ChatIdleTimeout: envOrDurationDefault("TELECODER_CHAT_IDLE_TIMEOUT", 30*time.Minute),
 		ChatMaxMessages: envOrIntDefault("TELECODER_CHAT_MAX_MESSAGES", 50),
 		WebhookSecret:   os.Getenv("GITHUB_WEBHOOK_SECRET"),
+		Agent:           envOrDefault("TELECODER_AGENT", "auto"),
+	}
+
+	// Per-stage agent overrides from env vars.
+	if v := os.Getenv("TELECODER_RESEARCH_AGENT"); v != "" {
+		cfg.ResearchAgent = &telecoder.AgentConfig{Name: v}
+	}
+	if v := os.Getenv("TELECODER_CODE_AGENT"); v != "" {
+		cfg.CodeAgent = &telecoder.AgentConfig{Name: v}
+	}
+	if v := os.Getenv("TELECODER_REVIEW_AGENT"); v != "" {
+		cfg.ReviewAgent = &telecoder.AgentConfig{Name: v}
 	}
 
 	builder := telecoder.NewBuilder().WithConfig(cfg)

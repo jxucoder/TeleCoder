@@ -24,7 +24,7 @@ telecoder run "add rate limiting to /api/users" --repo myorg/myapp
 
 1. You send a task — via **CLI**, **Slack**, or **Telegram**
 2. TeleCoder spins up an **isolated Docker sandbox** with your repo
-3. A coding agent works on the task — [OpenCode](https://opencode.ai/) (Anthropic key) or [Codex](https://openai.com/index/codex/) (OpenAI key)
+3. A coding agent works on the task — [OpenCode](https://opencode.ai/), [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview), or [Codex](https://openai.com/index/codex/)
 4. Changes are committed, pushed, and a **PR is opened**
 5. You review the PR
 
@@ -60,6 +60,34 @@ TeleCoder is built for teams that want the speed of AI coding without turning ev
 
 If you just want to run tasks and get PRs, use the CLI and defaults.
 If you want to build a custom coding-agent product, import TeleCoder as a Go library.
+
+## Multi-Agent Pipeline
+
+By default, TeleCoder uses a single agent for the coding stage (auto-detected from your API key). You can assign **different agents to different stages** for a multi-agent workflow:
+
+```bash
+export TELECODER_AGENT=claude-code              # default coding agent
+export TELECODER_RESEARCH_AGENT=opencode        # explore codebase before planning
+export TELECODER_REVIEW_AGENT=codex             # review the diff with a full agent
+```
+
+Or via the builder API:
+
+```go
+app, _ := telecoder.NewBuilder().
+    WithConfig(telecoder.Config{
+        ResearchAgent: &telecoder.AgentConfig{Name: "opencode"},
+        CodeAgent:     &telecoder.AgentConfig{Name: "claude-code"},
+        ReviewAgent:   &telecoder.AgentConfig{Name: "codex"},
+    }).
+    Build()
+```
+
+You can also override the agent per session via the API or CLI:
+
+```bash
+telecoder run "fix the bug" --repo myorg/myapp --agent claude-code
+```
 
 ## For Builders
 
@@ -122,8 +150,8 @@ cp .env.example .env
 | Variable | Description |
 |:---------|:------------|
 | `GITHUB_TOKEN` | GitHub personal access token with `repo` scope |
-| `ANTHROPIC_API_KEY` | Anthropic API key (uses OpenCode agent) |
-| `OPENAI_API_KEY` | OpenAI API key (uses Codex agent) — one of the two LLM keys is required |
+| `ANTHROPIC_API_KEY` | Anthropic API key — at least one LLM key is required |
+| `OPENAI_API_KEY` | OpenAI API key — at least one LLM key is required |
 
 **Optional:**
 
@@ -133,7 +161,11 @@ cp .env.example .env
 | `TELECODER_DOCKER_IMAGE` | `telecoder-sandbox` | Sandbox Docker image name |
 | `TELECODER_MAX_REVISIONS` | `1` | Max review/revision rounds per sub-task |
 | `TELECODER_PLANNER_MODEL` | auto | Override the LLM model used for plan/review pipeline stages |
+| `TELECODER_AGENT` | `auto` | Default coding agent: `opencode`, `claude-code`, `codex`, or `auto` |
 | `TELECODER_AGENT_MODEL` | auto | Override the model used by the in-sandbox coding agent |
+| `TELECODER_RESEARCH_AGENT` | — | Agent for codebase research before planning (e.g. `opencode`) |
+| `TELECODER_CODE_AGENT` | — | Override the coding-stage agent (e.g. `claude-code`) |
+| `TELECODER_REVIEW_AGENT` | — | Agent for code review instead of LLM-only review (e.g. `codex`) |
 | `TELECODER_SERVER` | `http://localhost:7080` | Server URL (used by the CLI when talking to a remote server) |
 
 For Slack, Telegram, and webhook configuration, see [docs/reference.md](docs/reference.md).

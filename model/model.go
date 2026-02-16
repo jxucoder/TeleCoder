@@ -34,6 +34,7 @@ type Session struct {
 	Mode        Mode      `json:"mode"`
 	Status      Status    `json:"status"`
 	Branch      string    `json:"branch"`
+	Agent       string    `json:"agent,omitempty"` // per-session agent override
 	PRUrl       string    `json:"pr_url,omitempty"`
 	PRNumber    int       `json:"pr_number,omitempty"`
 	ContainerID string    `json:"-"`

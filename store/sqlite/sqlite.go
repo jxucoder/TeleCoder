@@ -46,6 +46,7 @@ func migrate(db *sql.DB) error {
 			mode         TEXT NOT NULL DEFAULT 'task',
 			status       TEXT NOT NULL DEFAULT 'pending',
 			branch       TEXT NOT NULL DEFAULT '',
+			agent        TEXT NOT NULL DEFAULT '',
 			pr_url       TEXT NOT NULL DEFAULT '',
 			pr_number    INTEGER NOT NULL DEFAULT 0,
 			container_id TEXT NOT NULL DEFAULT '',
@@ -78,7 +79,14 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_messages_session_id
 			ON messages(session_id);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add agent column to existing databases (idempotent).
+	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT ''`)
+
+	return nil
 }
 
 // Close closes the database connection.
@@ -92,10 +100,10 @@ func (s *Store) CreateSession(sess *model.Session) error {
 		sess.Mode = model.ModeTask
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, repo, prompt, mode, status, branch, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, repo, prompt, mode, status, branch, agent, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.Repo, sess.Prompt, sess.Mode, sess.Status, sess.Branch,
-		sess.CreatedAt, sess.UpdatedAt,
+		sess.Agent, sess.CreatedAt, sess.UpdatedAt,
 	)
 	return err
 }
@@ -103,7 +111,7 @@ func (s *Store) CreateSession(sess *model.Session) error {
 // GetSession retrieves a session by ID.
 func (s *Store) GetSession(id string) (*model.Session, error) {
 	row := s.db.QueryRow(
-		`SELECT id, repo, prompt, mode, status, branch, pr_url, pr_number,
+		`SELECT id, repo, prompt, mode, status, branch, agent, pr_url, pr_number,
 		        container_id, error, created_at, updated_at
 		 FROM sessions WHERE id = ?`, id,
 	)
@@ -113,7 +121,7 @@ func (s *Store) GetSession(id string) (*model.Session, error) {
 // ListSessions returns all sessions ordered by creation time (newest first).
 func (s *Store) ListSessions() ([]*model.Session, error) {
 	rows, err := s.db.Query(
-		`SELECT id, repo, prompt, mode, status, branch, pr_url, pr_number,
+		`SELECT id, repo, prompt, mode, status, branch, agent, pr_url, pr_number,
 		        container_id, error, created_at, updated_at
 		 FROM sessions ORDER BY created_at DESC`,
 	)
@@ -138,10 +146,10 @@ func (s *Store) UpdateSession(sess *model.Session) error {
 	sess.UpdatedAt = time.Now().UTC()
 	_, err := s.db.Exec(
 		`UPDATE sessions SET
-			status = ?, branch = ?, pr_url = ?, pr_number = ?,
+			status = ?, branch = ?, agent = ?, pr_url = ?, pr_number = ?,
 			container_id = ?, error = ?, updated_at = ?
 		 WHERE id = ?`,
-		sess.Status, sess.Branch, sess.PRUrl, sess.PRNumber,
+		sess.Status, sess.Branch, sess.Agent, sess.PRUrl, sess.PRNumber,
 		sess.ContainerID, sess.Error, sess.UpdatedAt, sess.ID,
 	)
 	return err
@@ -193,7 +201,7 @@ func (s *Store) GetEvents(sessionID string, afterID int64) ([]*model.Event, erro
 // GetSessionByPR retrieves a session by its PR number and repository.
 func (s *Store) GetSessionByPR(repo string, prNumber int) (*model.Session, error) {
 	row := s.db.QueryRow(
-		`SELECT id, repo, prompt, mode, status, branch, pr_url, pr_number,
+		`SELECT id, repo, prompt, mode, status, branch, agent, pr_url, pr_number,
 		        container_id, error, created_at, updated_at
 		 FROM sessions
 		 WHERE repo = ? AND pr_number = ?
@@ -258,7 +266,7 @@ func scanSession(row scannable) (*model.Session, error) {
 	sess := &model.Session{}
 	err := row.Scan(
 		&sess.ID, &sess.Repo, &sess.Prompt, &sess.Mode, &sess.Status,
-		&sess.Branch, &sess.PRUrl, &sess.PRNumber,
+		&sess.Branch, &sess.Agent, &sess.PRUrl, &sess.PRNumber,
 		&sess.ContainerID, &sess.Error, &sess.CreatedAt, &sess.UpdatedAt,
 	)
 	if err != nil {
