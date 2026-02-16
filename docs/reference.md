@@ -46,10 +46,10 @@ app, err := telecoder.NewBuilder().
 |:----------|:--------|:---------|
 | `llm.Client` | LLM provider | Anthropic, OpenAI |
 | `store.SessionStore` | Persistence | SQLite |
-| `sandbox.Runtime` | Sandbox lifecycle | Docker |
+| `sandbox.Runtime` | Sandbox lifecycle | Docker, SSH (remote VPS) |
 | `gitprovider.Provider` | Git hosting | GitHub |
 | `eventbus.Bus` | Real-time event pub/sub | In-memory |
-| `pipeline.Stage` | Orchestration stages | Plan, Review, Decompose |
+| `pipeline.Stage` | Orchestration stages | Plan, Review, Decompose, Verify |
 | `channel.Channel` | Input/output transport | Slack, Telegram |
 
 ## Architecture
@@ -64,6 +64,8 @@ TeleCoder is a single binary: `telecoderserve` runs the server, and `telecoderru
 | **HTTP API** | `httpapi/` | Chi router. REST API + SSE streaming. Delegates logic to engine. |
 | **Store** | `store/sqlite/` | SQLite persistence (WAL mode) for sessions, messages, and events. |
 | **Sandbox** | `sandbox/docker/` | One Docker container per task (or persistent container for chat mode). |
+| **Sandbox (SSH)** | `sandbox/ssh/` | Remote sandbox via SSH — run Docker on any VPS or cloud host. |
+| **Sandbox Pool** | `sandbox/` | Pre-warming pool that wraps any Runtime for near-instant startup. |
 | **Git Provider** | `gitprovider/github/` | GitHub API: PR creation, repo indexing, webhook handling. |
 | **Event Bus** | `eventbus/` | In-memory pub/sub for real-time SSE events. |
 | **Channels** | `channel/slack/`, `channel/telegram/` | Bot integrations: send tasks from chat, get PR links back. |
@@ -115,8 +117,9 @@ TeleCoder/
 |   `-- openai/               OpenAI implementation
 |-- store/                    SessionStore interface
 |   `-- sqlite/               SQLite implementation
-|-- sandbox/                  Runtime interface
-|   `-- docker/               Docker implementation
+|-- sandbox/                  Runtime interface + pre-warming Pool
+|   |-- docker/               Docker implementation
+|   `-- ssh/                  SSH remote implementation
 |-- gitprovider/              Provider interface
 |   `-- github/               GitHub implementation (client, indexer, webhook)
 |-- eventbus/                 Bus interface + InMemoryBus
@@ -166,6 +169,6 @@ TeleCoder/
 
 ### Phase 4 - Quality and Speed
 
-- [ ] Built-in test/lint pipeline stage — verify agent output before creating PR
-- [ ] Sandbox pre-warming and snapshot restore for near-instant startup
-- [ ] Remote sandbox provider — run sandboxes on a VPS or cloud Docker host
+- [x] Built-in test/lint pipeline stage — verify agent output before creating PR
+- [x] Sandbox pre-warming pool for near-instant startup
+- [x] Remote sandbox provider — run sandboxes on a VPS or cloud Docker host via SSH

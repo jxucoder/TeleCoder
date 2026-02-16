@@ -42,6 +42,7 @@ type Engine struct {
 	plan     *pipeline.PlanStage
 	review   *pipeline.ReviewStage
 	decompose *pipeline.DecomposeStage
+	verify   *pipeline.VerifyStage
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -58,6 +59,7 @@ func New(
 	plan *pipeline.PlanStage,
 	review *pipeline.ReviewStage,
 	decompose *pipeline.DecomposeStage,
+	verify *pipeline.VerifyStage,
 ) *Engine {
 	return &Engine{
 		config:    cfg,
@@ -68,6 +70,7 @@ func New(
 		plan:      plan,
 		review:    review,
 		decompose: decompose,
+		verify:    verify,
 	}
 }
 
@@ -566,6 +569,20 @@ func (e *Engine) runSubTask(ctx context.Context, sess *model.Session, taskPrompt
 			return lastContainerID, fmt.Errorf("%s", errMsg)
 		}
 
+		// Run verify (test/lint) if configured.
+		if e.verify != nil {
+			verifyResult := e.runVerify(ctx, sess, result.containerID, taskPrompt)
+			if verifyResult != nil && !verifyResult.Passed {
+				e.emitEvent(sess.ID, "output", "## Verify Failed\n"+verifyResult.Feedback)
+				if round >= maxRounds {
+					e.emitEvent(sess.ID, "status", fmt.Sprintf("Tests/lint failed but max revision rounds (%d) reached, proceeding", maxRounds))
+				} else {
+					prompt = pipeline.RevisePrompt(taskPrompt, plan, "Tests/lint failed. Fix the following issues:\n\n"+verifyResult.Feedback)
+					continue
+				}
+			}
+		}
+
 		if e.review == nil || plan == "" {
 			break
 		}
@@ -649,6 +666,64 @@ func (e *Engine) runSandboxRound(ctx context.Context, sess *model.Session, promp
 		exitCode:    exitCode,
 		lastLine:    lastLine,
 	}, nil
+}
+
+func (e *Engine) runVerify(ctx context.Context, sess *model.Session, containerID, taskPrompt string) *pipeline.VerifyResult {
+	e.emitEvent(sess.ID, "status", "Running tests and linting...")
+
+	// Detect which files exist to pick the right test/lint commands.
+	probeFiles := []string{
+		"go.mod", "package.json", "Cargo.toml", "requirements.txt",
+		"pyproject.toml", "setup.py", "Makefile",
+		".eslintrc.js", ".eslintrc.json", "eslint.config.js", "eslint.config.mjs",
+	}
+	existing := make(map[string]bool)
+	for _, f := range probeFiles {
+		_, err := e.sandbox.ExecCollect(ctx, containerID, []string{
+			"test", "-f", "/workspace/repo/" + f,
+		})
+		if err == nil {
+			existing[f] = true
+		}
+	}
+
+	cmds := pipeline.DetectVerifyCommands(existing)
+	if len(cmds) == 0 {
+		e.emitEvent(sess.ID, "status", "No test/lint commands detected, skipping verify")
+		return nil
+	}
+
+	// Run all verify commands and collect output.
+	var allOutput strings.Builder
+	for _, cmd := range cmds {
+		output, _ := e.sandbox.ExecCollect(ctx, containerID, []string{
+			"bash", "-c", "cd /workspace/repo && " + cmd,
+		})
+		if output != "" {
+			allOutput.WriteString(output)
+			allOutput.WriteString("\n")
+		}
+	}
+
+	pCtx := &pipeline.Context{
+		Ctx:    ctx,
+		Prompt: taskPrompt,
+	}
+
+	result, err := e.verify.Verify(pCtx, allOutput.String())
+	if err != nil {
+		log.Printf("Verify analysis failed (proceeding): %v", err)
+		e.emitEvent(sess.ID, "status", "Verify analysis failed, proceeding")
+		return nil
+	}
+
+	if result.Passed {
+		e.emitEvent(sess.ID, "status", "Tests and linting passed")
+	} else {
+		e.emitEvent(sess.ID, "status", "Tests or linting failed")
+	}
+
+	return result
 }
 
 func (e *Engine) getDiffFromContainer(ctx context.Context, containerID string) string {

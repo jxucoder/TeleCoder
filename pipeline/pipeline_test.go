@@ -86,6 +86,69 @@ func TestDecomposeFallsBackOnBadJSON(t *testing.T) {
 	}
 }
 
+func TestVerifyPassed(t *testing.T) {
+	stage := NewVerifyStage(&fakeLLM{response: "PASSED: all tests pass"}, "")
+	ctx := &Context{Ctx: context.Background(), Prompt: "fix bug"}
+	res, err := stage.Verify(ctx, "ok  	github.com/foo/bar	0.012s")
+	if err != nil {
+		t.Fatalf("verify error: %v", err)
+	}
+	if !res.Passed {
+		t.Fatal("expected passed verify")
+	}
+}
+
+func TestVerifyFailed(t *testing.T) {
+	stage := NewVerifyStage(&fakeLLM{response: "FAILED: TestFoo assertion error"}, "")
+	ctx := &Context{Ctx: context.Background(), Prompt: "fix bug"}
+	res, err := stage.Verify(ctx, "--- FAIL: TestFoo (0.00s)")
+	if err != nil {
+		t.Fatalf("verify error: %v", err)
+	}
+	if res.Passed {
+		t.Fatal("expected failed verify")
+	}
+}
+
+func TestVerifyEmptyOutput(t *testing.T) {
+	stage := NewVerifyStage(&fakeLLM{response: "should not be called"}, "")
+	ctx := &Context{Ctx: context.Background(), Prompt: "fix bug"}
+	res, err := stage.Verify(ctx, "")
+	if err != nil {
+		t.Fatalf("verify error: %v", err)
+	}
+	if !res.Passed {
+		t.Fatal("expected passed for empty output")
+	}
+}
+
+func TestDetectVerifyCommands(t *testing.T) {
+	cmds := DetectVerifyCommands(map[string]bool{"go.mod": true})
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands for go.mod, got %d: %v", len(cmds), cmds)
+	}
+	if !strings.Contains(cmds[0], "go test") {
+		t.Fatalf("expected go test command, got: %s", cmds[0])
+	}
+	if !strings.Contains(cmds[1], "go vet") {
+		t.Fatalf("expected go vet command, got: %s", cmds[1])
+	}
+}
+
+func TestDetectVerifyCommandsNode(t *testing.T) {
+	cmds := DetectVerifyCommands(map[string]bool{"package.json": true, ".eslintrc.json": true})
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d: %v", len(cmds), cmds)
+	}
+}
+
+func TestDetectVerifyCommandsNone(t *testing.T) {
+	cmds := DetectVerifyCommands(map[string]bool{})
+	if len(cmds) != 0 {
+		t.Fatalf("expected 0 commands, got %d: %v", len(cmds), cmds)
+	}
+}
+
 func TestExtractJSON(t *testing.T) {
 	raw := "```json\n[{\"title\":\"A\",\"description\":\"B\"}]\n```"
 	got := extractJSON(raw)

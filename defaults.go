@@ -91,6 +91,9 @@ func applyDefaults(b *Builder) error {
 		if b.decompose == nil {
 			b.decompose = pipeline.NewDecomposeStage(b.llm, "")
 		}
+		if b.verify == nil {
+			b.verify = pipeline.NewVerifyStage(b.llm, "")
+		}
 	}
 
 	return nil

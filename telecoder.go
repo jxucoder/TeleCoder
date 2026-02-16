@@ -75,6 +75,7 @@ type Builder struct {
 	plan      *pipeline.PlanStage
 	review    *pipeline.ReviewStage
 	decompose *pipeline.DecomposeStage
+	verify    *pipeline.VerifyStage
 	channels  []channel.Channel
 }
 
@@ -128,6 +129,12 @@ func (b *Builder) WithPipelineStages(plan *pipeline.PlanStage, review *pipeline.
 	return b
 }
 
+// WithVerifyStage sets a custom verify (test/lint) stage.
+func (b *Builder) WithVerifyStage(v *pipeline.VerifyStage) *Builder {
+	b.verify = v
+	return b
+}
+
 // WithChannel adds a channel (Slack, Telegram, etc.) to the application.
 func (b *Builder) WithChannel(ch channel.Channel) *Builder {
 	b.channels = append(b.channels, ch)
@@ -157,6 +164,7 @@ func (b *Builder) Build() (*App, error) {
 		b.plan,
 		b.review,
 		b.decompose,
+		b.verify,
 	)
 
 	handler := httpapi.New(eng)

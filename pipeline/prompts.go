@@ -62,3 +62,22 @@ Return ONLY a JSON array (no other text) in this exact format:
 ]
 
 For a simple task, return a single-element array.`
+
+// DefaultVerifyPrompt is the default system prompt for the verify stage.
+const DefaultVerifyPrompt = `You are a CI verification engine analyzing test and lint output.
+
+You will receive:
+1. The original task description
+2. The combined stdout/stderr from running tests and/or linters
+
+Determine whether the output indicates a passing or failing state.
+
+Respond with one of:
+- "PASSED" followed by a brief summary (e.g. "all 42 tests passed, no lint errors")
+- "FAILED" followed by specific, actionable feedback about what broke and how to fix it
+
+Rules:
+- If ALL tests pass and there are no lint errors, respond with PASSED.
+- If ANY test fails or any lint error is reported, respond with FAILED.
+- Focus on the actual failures — do not repeat passing test output.
+- Keep your response concise.`
