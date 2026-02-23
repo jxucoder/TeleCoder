@@ -29,6 +29,7 @@ import (
 	"github.com/jxucoder/TeleCoder/pkg/eventbus"
 	"github.com/jxucoder/TeleCoder/pkg/gitprovider"
 	ghProvider "github.com/jxucoder/TeleCoder/pkg/gitprovider/github"
+	"github.com/jxucoder/TeleCoder/pkg/memory"
 	"github.com/jxucoder/TeleCoder/pkg/sandbox"
 	dockerSandbox "github.com/jxucoder/TeleCoder/pkg/sandbox/docker"
 	"github.com/jxucoder/TeleCoder/pkg/store"
@@ -151,6 +152,14 @@ func (b *Builder) Build() (*App, error) {
 		b.sandbox,
 		b.git,
 	)
+
+	// Wire up codebase memory if the store exposes its DB.
+	if sqlStore, ok := b.store.(*sqliteStore.Store); ok {
+		db := sqlStore.DB()
+		retriever := memory.NewRetriever(db, nil)
+		notes := memory.NewNoteStore(db)
+		eng.SetMemory(retriever, notes)
+	}
 
 	handler := httpapi.New(eng)
 

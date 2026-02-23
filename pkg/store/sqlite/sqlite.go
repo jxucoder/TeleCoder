@@ -90,7 +90,87 @@ func migrate(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN result_type TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN result_content TEXT NOT NULL DEFAULT ''`)
 
+	if err := migrateCodebaseMemory(db); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func migrateCodebaseMemory(db *sql.DB) error {
+	_, err := db.Exec(`
+		-- File-level metadata for indexed repos.
+		CREATE TABLE IF NOT EXISTS codebase_files (
+			repo       TEXT NOT NULL,
+			path       TEXT NOT NULL,
+			language   TEXT NOT NULL DEFAULT '',
+			hash       TEXT NOT NULL DEFAULT '',
+			indexed_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (repo, path)
+		);
+
+		-- Code chunks: one per function/class/method/block.
+		CREATE TABLE IF NOT EXISTS codebase_chunks (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			repo        TEXT NOT NULL,
+			file_path   TEXT NOT NULL,
+			chunk_type  TEXT NOT NULL DEFAULT '',
+			symbol_name TEXT NOT NULL DEFAULT '',
+			start_line  INTEGER NOT NULL DEFAULT 0,
+			end_line    INTEGER NOT NULL DEFAULT 0,
+			content     TEXT NOT NULL,
+			embedding   BLOB
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_chunks_repo
+			ON codebase_chunks(repo);
+		CREATE INDEX IF NOT EXISTS idx_chunks_file
+			ON codebase_chunks(repo, file_path);
+		CREATE INDEX IF NOT EXISTS idx_chunks_symbol
+			ON codebase_chunks(repo, symbol_name);
+
+		-- Knowledge notes: architecture decisions, conventions, patterns.
+		CREATE TABLE IF NOT EXISTS codebase_notes (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			repo       TEXT NOT NULL,
+			key        TEXT NOT NULL,
+			value      TEXT NOT NULL,
+			source     TEXT NOT NULL DEFAULT 'inferred',
+			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_notes_repo
+			ON codebase_notes(repo);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_repo_key
+			ON codebase_notes(repo, key);
+
+		-- Track last indexed commit per repo for incremental updates.
+		CREATE TABLE IF NOT EXISTS codebase_index_state (
+			repo          TEXT PRIMARY KEY,
+			last_commit   TEXT NOT NULL DEFAULT '',
+			last_indexed  DATETIME NOT NULL DEFAULT (datetime('now')),
+			total_files   INTEGER NOT NULL DEFAULT 0,
+			total_chunks  INTEGER NOT NULL DEFAULT 0
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("codebase memory migration: %w", err)
+	}
+
+	// FTS5 virtual table for full-text search over chunks.
+	// Separate exec because CREATE VIRTUAL TABLE can't be batched.
+	_, _ = db.Exec(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS codebase_chunks_fts
+		USING fts5(content, symbol_name, file_path, content=codebase_chunks, content_rowid=id)
+	`)
+
+	return nil
+}
+
+// DB returns the underlying database connection for use by other packages
+// (e.g., codebase memory).
+func (s *Store) DB() *sql.DB {
+	return s.db
 }
 
 // Close closes the database connection.

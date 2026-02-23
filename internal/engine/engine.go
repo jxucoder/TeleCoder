@@ -16,6 +16,7 @@ import (
 	"github.com/jxucoder/TeleCoder/pkg/agent"
 	"github.com/jxucoder/TeleCoder/pkg/eventbus"
 	"github.com/jxucoder/TeleCoder/pkg/gitprovider"
+	"github.com/jxucoder/TeleCoder/pkg/memory"
 	"github.com/jxucoder/TeleCoder/pkg/model"
 	"github.com/jxucoder/TeleCoder/pkg/sandbox"
 	"github.com/jxucoder/TeleCoder/pkg/store"
@@ -47,6 +48,10 @@ type Engine struct {
 	sandbox sandbox.Runtime
 	git     gitprovider.Provider
 
+	// Codebase memory (optional — nil if not configured).
+	retriever *memory.Retriever
+	notes     *memory.NoteStore
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -67,6 +72,52 @@ func New(
 		sandbox: sb,
 		git:     git,
 	}
+}
+
+// SetMemory configures the codebase memory subsystem on the engine.
+// If set, prompts will be enriched with relevant code context before
+// agent execution.
+func (e *Engine) SetMemory(ret *memory.Retriever, notes *memory.NoteStore) {
+	e.retriever = ret
+	e.notes = notes
+}
+
+// enrichPrompt prepends relevant codebase context to a prompt.
+// Returns the original prompt unchanged if memory is not configured.
+func (e *Engine) enrichPrompt(ctx context.Context, repo, prompt string) string {
+	if e.retriever == nil && e.notes == nil {
+		return prompt
+	}
+
+	var contextParts []string
+
+	// Inject knowledge notes.
+	if e.notes != nil {
+		notes, err := e.notes.List(repo)
+		if err == nil && len(notes) > 0 {
+			notesCtx := memory.FormatNotesContext(notes)
+			if notesCtx != "" {
+				contextParts = append(contextParts, notesCtx)
+			}
+		}
+	}
+
+	// Inject relevant code chunks.
+	if e.retriever != nil {
+		matches, err := e.retriever.Search(ctx, repo, prompt, 5)
+		if err == nil && len(matches) > 0 {
+			codeCtx := memory.FormatCodeContext(matches)
+			if codeCtx != "" {
+				contextParts = append(contextParts, codeCtx)
+			}
+		}
+	}
+
+	if len(contextParts) == 0 {
+		return prompt
+	}
+
+	return strings.Join(contextParts, "\n") + "\n---\n\n" + prompt
 }
 
 // Start starts background goroutines (idle reaper). Call Stop to shut down.
@@ -311,7 +362,10 @@ func (e *Engine) runChatMessage(sessionID, content string) {
 	e.store.UpdateSession(sess)
 	e.emitEvent(sess.ID, "status", "Running agent...")
 
-	agentCmd := e.chatAgentCommand(sess.Agent, content)
+	// Enrich chat message with codebase context.
+	enrichedContent := e.enrichPrompt(ctx, sess.Repo, content)
+
+	agentCmd := e.chatAgentCommand(sess.Agent, enrichedContent)
 	agentStream, err := e.sandbox.Exec(ctx, sess.ContainerID, []string{
 		"bash", "-c", agentCmd,
 	})
@@ -581,7 +635,10 @@ func (e *Engine) runSession(sessionID string) {
 		return
 	}
 
-	subTasks := []model.SubTask{{Title: "Complete task", Description: sess.Prompt}}
+	// Enrich the prompt with codebase memory context.
+	enrichedPrompt := e.enrichPrompt(ctx, sess.Repo, sess.Prompt)
+
+	subTasks := []model.SubTask{{Title: "Complete task", Description: enrichedPrompt}}
 	e.runSessionSingleTask(ctx, sess, subTasks)
 }
 
