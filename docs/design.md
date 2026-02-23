@@ -1,378 +1,429 @@
-# TeleCoder v2 Design
+# TeleCoder v3 Design
 
-> A remote agent that does things for your team.
+> Your personal AI coding assistant. Any channel. Any repo. The lobster's coding cousin. 🦀
 
 ## What It Is
 
-TeleCoder gives your team a remote agent — always running on a server,
-reachable from anywhere, doing real work autonomously.
+TeleCoder is an **OpenClaw-style personal AI assistant built for coding**. It lives
+on your messaging channels (WhatsApp, Telegram, Slack, Discord), monitors your
+repos, and does real coding work — proactively and on demand.
 
-Each task runs in its own Docker sandbox — a fresh clone of your repo,
-isolated from the host and other tasks. The agent reads code, executes
-commands, calls external APIs (Jira, Buildkite, GitHub, whatever the task
-needs), edits files, and produces concrete results. A task can come from a Slack
-message, a GitHub issue, a PagerDuty alert, a failing CI build, a cron
-schedule, or any webhook. The result can be a pull request, a bug fix, a
-debug report, a migration plan, or a dependency update.
-
-Configure the agent once per repo:
+Unlike v2 (a task-runner that produces PRs), v3 is a **coding companion** that:
+- Messages you when CI breaks, a PR needs review, or deps are outdated
+- Fixes things autonomously when you tell it to
+- Answers code questions in natural conversation
+- Runs anywhere: your laptop, a VPS, or your team's server
 
 ```
-my-repo/
-├── AGENTS.md       ← who the agent is and how it works
-└── src/
+You (Telegram): "hey, tests are failing on main — can you look?"
+TeleCoder:      "Looking... it's a nil pointer in user_service.go:47.
+                 The recent merge removed the null check. Want me to fix it?"
+You:            "yeah go for it"
+TeleCoder:      "Fixed and pushed → PR #203. Tests pass now."
+```
+
+```
+TeleCoder (proactive, 9am Monday):
+  "3 Dependabot alerts on myorg/api — 1 critical (lodash prototype pollution).
+   Want me to update and run the test suite?"
 ```
 
 ---
 
-## Architecture
+## Architecture: Gateway → Agent Loop → Heartbeat
+
+Inspired by OpenClaw's three-pillar architecture, adapted for coding:
 
 ```
-  Any event source          ┌──────────────────────────────┐
-                            │          TeleCoder            │
-  Slack / Telegram          │                              │
-  GitHub / Linear / Jira ──▶│  Dispatcher → Engine         │
-  PagerDuty / Sentry        │      ↕            ↕          │
-  CI failure / Cron         │    Store       Sandbox        │
-  Agent output   ◀──────────│   (SQLite)    (Docker)        │
-                            └─────────────┬────────────────┘
-                                          │
-                                ┌─────────▼──────────┐
-                                │  Docker Container   │
-                                │  [coding engine]    │
-                                │   reads AGENTS.md   │
-                                │   emits events      │
-                                └─────────────────────┘
-                                          │
-                                          ▼
-                                 PR / text / event
+┌─────────────────────────────────────────────────────────┐
+│                       TeleCoder                          │
+│                                                          │
+│  ┌──────────┐    ┌──────────────┐    ┌──────────────┐   │
+│  │ Gateway   │───▶│  Agent Loop  │◀───│  Heartbeat   │   │
+│  │           │    │              │    │              │   │
+│  │ WhatsApp  │    │ LLM brain    │    │ CI monitor   │   │
+│  │ Telegram  │    │ Skill router │    │ PR watcher   │   │
+│  │ Slack     │    │ Conversation │    │ Dep auditor  │   │
+│  │ Discord   │    │ Memory       │    │ Repo health  │   │
+│  │ GitHub    │    │ Tool use     │    │ Cron jobs    │   │
+│  │ WebChat   │    │              │    │ Alert feeds  │   │
+│  └──────────┘    └──────┬───────┘    └──────────────┘   │
+│                         │                                │
+│              ┌──────────▼───────────┐                    │
+│              │  Skill Executor      │                    │
+│              │                      │                    │
+│              │  Sandbox (Docker)    │                    │
+│              │  Git operations      │                    │
+│              │  CI/CD APIs          │                    │
+│              │  Code analysis       │                    │
+│              │  File system         │                    │
+│              └──────────────────────┘                    │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  Store (SQLite)                                   │   │
+│  │  Conversations · Memory · Repos · Heartbeat state │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**Dispatcher** — LLM-powered router. Reads any incoming event and decides:
-ignore, reply, or spawn an agent session. No keyword matching.
+### Gateway
 
-**Engine** — session orchestration. Creates containers, streams events,
-manages state, handles timeouts, creates PRs.
+The Gateway handles all inbound/outbound messaging. Every channel is a
+bidirectional transport — TeleCoder both receives and sends messages.
 
-**Coding engine** — runs inside each container. Pluggable: Pi, Claude Code,
-OpenCode, Codex, or any future agent. TeleCoder never calls an LLM.
+**Channels (messaging-first):**
+- WhatsApp (via WhatsApp Business API or Baileys)
+- Telegram
+- Slack
+- Discord
+- GitHub (issues, PR comments, discussions)
+- WebChat (built-in web UI)
+- Linear, Jira (webhook → outbound via API)
 
-**Store** — SQLite. Every session, event, result, and chain persisted.
+**Key difference from v2:** Channels are the *primary* interface, not a bolt-on.
+The Gateway maintains per-user conversation state, not per-session. You talk to
+TeleCoder like a person, not like a job queue.
 
-**Sandbox** — Docker. Isolated, ephemeral, pre-warmed pool.
+### Agent Loop
 
----
+The brain. An LLM-powered agent that:
+1. Understands your message in context (conversation history + repo knowledge)
+2. Decides which Skills to invoke (or just responds conversationally)
+3. Executes Skills and reports results
+4. Maintains persistent memory across conversations
 
-## The Dispatcher
-
-The dispatcher is what makes TeleCoder more than a job queue.
-
-**LLM-powered routing.** Instead of `if label == "telecoder" then run`,
-a lightweight LLM reads every incoming event and outputs a decision:
-
-```json
-{ "action": "spawn" | "reply" | "ignore", "repo": "owner/repo", "prompt": "..." }
-```
-
-A Sentry alert becomes an investigation task. A vague Slack message gets
-a clarifying question. A standup question is ignored. No configuration
-required beyond a system prompt per channel.
-
-**Agent chains.** A session emits events that spawn new sessions. Defined
-in `AGENTS.md`:
-
-```markdown
-After opening a PR, request a code review from the review agent.
-If the review finds issues, fix them before considering the task done.
-```
-
-The agent codes → review agent reviews → fix agent patches → no human
-re-prompting between steps.
-
-**Human-in-the-loop.** An agent pauses mid-task, posts a question to the
-user's channel, waits for a reply, and resumes with the answer.
-
-**Cross-session memory.** A vector store of past sessions per repo.
-Relevant context is injected when a new session starts. TeleCoder's
-value compounds over time.
-
-**Proactive monitoring.** A heartbeat polls CI dashboards, Dependabot
-alerts, and log aggregators on a schedule. The dispatcher decides whether
-to act — no human trigger needed.
-
----
-
-## Pluggable Engines
-
-Any headless coding agent that runs in Docker.
-
-| Engine | Command | Models | License |
-|--------|---------|--------|---------|
-| **Pi** (default) | `pi -p "…" --mode json` | 15+ providers | MIT |
-| **Claude Code** | `claude -p "…" --output-format stream-json` | Anthropic only | Proprietary |
-| **OpenCode** | `opencode -p "…"` | 15+ providers | MIT |
-| **Codex** | `codex exec --full-auto "…"` | OpenAI only | Apache 2.0 |
-
-Pi is the default: model-agnostic, MIT, richest JSONL output, and no
-existing orchestration layer competing with TeleCoder.
-
-Adding an engine: ~50 lines implementing one interface.
+**Not a dispatcher** — the Agent Loop is a full reasoning agent, not a router.
+It can plan multi-step workflows, ask clarifying questions, and hold context
+across hours or days of conversation.
 
 ```go
-type Engine interface {
+type AgentLoop interface {
+    // HandleMessage processes an inbound message and returns responses.
+    // The agent decides what skills to invoke, if any.
+    HandleMessage(ctx context.Context, conv *Conversation, msg *Message) ([]*Message, error)
+
+    // HandleHeartbeatEvent processes a proactive event from the Heartbeat.
+    // Returns messages to send to the user, or nil to stay silent.
+    HandleHeartbeatEvent(ctx context.Context, event *HeartbeatEvent) ([]*Message, error)
+}
+```
+
+**Model-agnostic:** Works with Claude, GPT, DeepSeek, Gemini, local models.
+The LLM is a pluggable interface, not hardcoded.
+
+### Heartbeat
+
+The proactive engine. Runs on a schedule, monitors external systems, and
+feeds events into the Agent Loop for decision-making.
+
+**Built-in monitors:**
+- **CI/CD** — Poll GitHub Actions, GitLab CI, Buildkite for failures
+- **PR watcher** — New PRs, review requests, stale PRs, merge conflicts
+- **Dependency audit** — Dependabot/Renovate alerts, outdated packages
+- **Repo health** — Flaky tests, code coverage drops, TODO accumulation
+- **Alert feeds** — Sentry, PagerDuty, Datadog (via webhooks)
+- **Cron jobs** — User-defined scheduled tasks (same YAML as v2)
+
+The Heartbeat doesn't act directly — it sends events to the Agent Loop, which
+decides whether to message the user, act autonomously, or stay silent.
+
+```go
+type Monitor interface {
     Name() string
-    Command(prompt string) string
-    ParseEvent(line string) *model.Event
+    // Check runs the monitor and returns events (if any).
+    Check(ctx context.Context, repos []RepoConfig) ([]HeartbeatEvent, error)
+    // Interval returns how often this monitor should run.
+    Interval() time.Duration
 }
 ```
 
 ---
 
-## Session Modes
+## Skills (replacing monolithic coding agents)
 
-| Mode | Description |
-|------|-------------|
-| **Task** | Single prompt → engine runs → PR or text. Container destroyed. |
-| **Chat** | Persistent container. Multiple messages. PR on demand. |
-| **Autonomous** | Dispatcher-spawned. Engine runs, emits event, may chain. |
-| **Batch/cron** | Scheduled job: same prompt across many repos, or sequential steps against one. Each step is a task-mode session. |
+v2 had 4 monolithic coding agents (Pi, Claude Code, OpenCode, Codex) that
+did everything. v3 breaks capabilities into **focused Skills** that the
+Agent Loop composes as needed.
 
-Batch jobs are defined as YAML in `.telecoder/jobs/`:
+### Core Skills (built-in)
+
+| Skill | What it does |
+|-------|-------------|
+| `code.edit` | Edit files in a repo (direct LLM-powered edits) |
+| `code.sandbox` | Run a coding agent in a Docker sandbox (Pi, Claude Code, etc.) |
+| `code.search` | Search codebases (grep, AST, semantic) |
+| `code.review` | Review a PR or diff for issues |
+| `code.explain` | Explain code, architecture, or patterns |
+| `git.commit` | Stage, commit, push changes |
+| `git.pr` | Create, update, or merge pull requests |
+| `git.branch` | Create, switch, delete branches |
+| `git.diff` | Show diffs, compare branches |
+| `test.run` | Run test suites, report results |
+| `test.write` | Generate tests for given code |
+| `lint.run` | Run linters, format code |
+| `deps.audit` | Check for outdated/vulnerable dependencies |
+| `deps.update` | Update dependencies and verify |
+| `ci.status` | Check CI/CD pipeline status |
+| `ci.logs` | Fetch and analyze CI failure logs |
+| `shell.exec` | Run arbitrary shell commands in sandbox |
+| `web.fetch` | Fetch and summarize web pages/docs |
+| `repo.setup` | Clone, configure, and analyze a new repo |
+| `memory.recall` | Search past conversations and sessions |
+
+### Skill Interface
+
+```go
+type Skill interface {
+    // Name returns the skill identifier (e.g., "code.edit").
+    Name() string
+
+    // Description returns a human-readable description for the LLM to decide when to use it.
+    Description() string
+
+    // Parameters returns the JSON schema for this skill's input.
+    Parameters() json.RawMessage
+
+    // Execute runs the skill and returns a result.
+    Execute(ctx context.Context, params json.RawMessage) (*SkillResult, error)
+}
+
+type SkillResult struct {
+    Output   string   // Text output to include in conversation
+    Files    []string // Files created or modified
+    Artifacts []Artifact // PRs, commits, etc.
+    Error    string   // Error message if failed
+}
+```
+
+### Community Skills
+
+Like OpenClaw's AgentSkills, users can add custom skills:
 
 ```yaml
-schedule: "0 9 * * MON"
-repos: [org/api, org/frontend]
-prompt: "Audit for outdated deps and TODOs older than 90 days."
+# ~/.telecoder/skills/deploy-staging.yaml
+name: deploy.staging
+description: "Deploy the current branch to the staging environment"
+command: |
+  cd /workspace/repo
+  make deploy-staging
+  echo "Deployed to https://staging.example.com"
+requires: [sandbox]
 ```
+
+Or as Go plugins:
+
+```go
+type DeploySkill struct{}
+func (s *DeploySkill) Name() string { return "deploy.staging" }
+// ...
+```
+
+The `code.sandbox` skill wraps the existing v2 coding agents (Pi, Claude Code,
+OpenCode, Codex) as a single skill. For complex tasks, the Agent Loop invokes
+`code.sandbox` which spins up a full Docker sandbox just like v2 — but now it's
+one tool among many, not the only way to interact.
 
 ---
 
-## Agent Configuration
+## Conversation Model (replacing Sessions)
 
-All engines read `AGENTS.md` from the repo root. It defines both how the
-agent works and what it does next — making chains declarative:
+v2's model: **Session** = one task, one sandbox, one result.
 
-```markdown
-# AGENTS.md
-You are a senior backend engineer. Always run `make test` before finishing.
-Never modify generated files in `pkg/api/gen/`.
+v3's model: **Conversation** = ongoing relationship with a user about their repos.
 
-After opening a PR, request a code review. Fix any issues before done.
+```go
+type Conversation struct {
+    ID        string
+    UserID    string       // The human
+    Channel   string       // Where this conversation lives
+    Repos     []string     // Repos in context
+    Messages  []Message    // Full history
+    Memory    []MemoryRef  // Relevant past context (injected)
+    State     ConvState    // active, paused, archived
+    CreatedAt time.Time
+    UpdatedAt time.Time
+}
 ```
 
-No `AGENTS.md`? Engine uses defaults. TeleCoder injects: "run tests if
-a test suite exists."
+A conversation can span days. The Agent Loop has context of what you discussed
+yesterday. When you say "that PR from earlier", it knows which one.
+
+**Sessions still exist** internally — when the Agent Loop invokes `code.sandbox`,
+it creates a sandbox session. But users never see "sessions". They see a
+conversation thread on Telegram.
 
 ---
 
-## Getting Started
+## Deployment Modes
+
+### Local (personal)
 
 ```bash
-curl -fsSL https://telecoder.dev/install | bash
-telecoder setup    # GitHub token, LLM key, engine, channels, Docker check
-telecoder serve    # team server on :7080
+telecoder start
+# → Connects to Telegram, starts Heartbeat, ready to chat
+```
+
+Runs on your laptop or a Raspberry Pi. One user. Docker for sandboxes.
+Config in `~/.telecoder/config.yaml`.
+
+### Server (team)
+
+```bash
+telecoder serve --multi-user
+# → HTTP API + all channels, multi-user, shared repos
+```
+
+Runs on a VPS. Multiple users. Each user has their own conversations but
+shares repo access. Admin dashboard.
+
+### Config file
+
+```yaml
+# ~/.telecoder/config.yaml
+llm:
+  provider: anthropic          # or openai, deepseek, ollama, etc.
+  model: claude-sonnet-4-6
+  api_key: ${ANTHROPIC_API_KEY}
+
+channels:
+  telegram:
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+  slack:
+    bot_token: ${SLACK_BOT_TOKEN}
+    app_token: ${SLACK_APP_TOKEN}
+  # whatsapp:
+  #   ...
+
+github:
+  token: ${GITHUB_TOKEN}
+
+repos:
+  - name: myorg/api
+    branch: main
+    monitors: [ci, deps, prs]
+  - name: myorg/frontend
+    branch: main
+    monitors: [ci, prs]
+
+heartbeat:
+  enabled: true
+  ci_poll_interval: 5m
+  pr_poll_interval: 10m
+  dep_audit_interval: 24h
+  quiet_hours: "22:00-08:00"   # Don't message during these hours
+
+sandbox:
+  image: telecoder-sandbox
+  docker_network: telecoder-net
+
+memory:
+  enabled: true
+  embedder: openai              # or local (sentence-transformers)
 ```
 
 ---
 
-## Package Layout
+## What We Keep from v2
+
+| Component | Status |
+|-----------|--------|
+| `pkg/sandbox/` (Docker runtime) | **Keep** — core infrastructure |
+| `pkg/store/sqlite/` | **Keep + extend** — add conversations, memory tables |
+| `pkg/eventbus/` | **Keep** — still useful for real-time events |
+| `pkg/gitprovider/` | **Keep** — GitHub PR/webhook integration |
+| `pkg/model/` | **Refactor** — new types (Conversation, Skill, HeartbeatEvent) |
+| `pkg/memory/` | **Keep + extend** — conversation-level memory |
+| `pkg/agent/` | **Refactor** → becomes `code.sandbox` skill |
+| `pkg/dispatcher/` | **Delete** — replaced by Agent Loop |
+| `pkg/scheduler/` | **Refactor** → becomes part of Heartbeat |
+| `pkg/channel/` | **Refactor** — bidirectional Gateway channels |
+| `internal/engine/` | **Refactor** → Agent Loop + Skill Executor |
+| `internal/httpapi/` | **Keep + extend** — add conversation endpoints |
+| `cmd/telecoder/` | **Refactor** — `start` (local), `serve` (server) |
+| `web/` | **Refactor** — conversation UI, not session list |
+| `docker/entrypoint.sh` | **Keep** — sandbox still needs it |
+
+---
+
+## New Packages
 
 ```
-pkg/agent/        CodingAgent interface + Pi, Claude Code, OpenCode, Codex implementations
-pkg/dispatcher/   LLM-powered event router + agent chain evaluator
-pkg/memory/       Cross-session vector store (embedder interface + cosine similarity)
-pkg/scheduler/    Batch/cron job scheduler (YAML job definitions)
-pkg/store/        SQLite persistence (sessions, messages, events)
-pkg/sandbox/      Docker sandbox runtime, SSH remote, verify commands
-pkg/gitprovider/  GitHub PR creation + webhooks
-pkg/eventbus/     Real-time pub/sub (in-memory)
-pkg/channel/      Slack, Telegram, Linear, Jira, GitHub Issues
-pkg/model/        Core domain types (Session, Event, SubTask, etc.)
-internal/engine/  Session orchestration (uses pkg/agent interface)
-internal/httpapi/ HTTP API + SSE streaming
-cmd/telecoder/    CLI: serve, setup, run, list, status, logs, config
+pkg/gateway/          Bidirectional channel abstraction
+pkg/gateway/telegram/  Telegram (send + receive)
+pkg/gateway/slack/     Slack (send + receive)
+pkg/gateway/whatsapp/  WhatsApp
+pkg/gateway/discord/   Discord
+pkg/gateway/webchat/   Built-in WebChat
+pkg/agentloop/        LLM-powered reasoning agent
+pkg/skill/            Skill interface + registry
+pkg/skill/code/       code.edit, code.search, code.review, code.explain
+pkg/skill/git/        git.commit, git.pr, git.branch, git.diff
+pkg/skill/test/       test.run, test.write
+pkg/skill/sandbox/    code.sandbox (wraps v2 coding agents)
+pkg/skill/deps/       deps.audit, deps.update
+pkg/skill/ci/         ci.status, ci.logs
+pkg/skill/shell/      shell.exec
+pkg/skill/web/        web.fetch
+pkg/heartbeat/        Proactive monitoring engine
+pkg/heartbeat/ci/     CI/CD monitor
+pkg/heartbeat/pr/     PR watcher
+pkg/heartbeat/deps/   Dependency auditor
+pkg/heartbeat/cron/   Cron job runner (from v2 scheduler)
+pkg/conversation/     Conversation state management
+pkg/llm/              LLM provider interface (Anthropic, OpenAI, etc.)
 ```
-
-Removed from v1: `pkg/llm/`, `pkg/pipeline/` (~1,500 lines — engines
-handle this internally).
 
 ---
 
 ## Implementation Plan
 
-No backward compatibility. Delete freely. Each task has an eval.
+### Phase 1 — Core Agent Loop (replace engine with conversational agent)
 
-### Task 1: Delete v1 pipeline and LLM packages
+1. **LLM provider interface** — `pkg/llm/` with Anthropic + OpenAI implementations
+2. **Skill interface + registry** — `pkg/skill/` with core skill definitions
+3. **Agent Loop** — `pkg/agentloop/` — LLM-powered reasoning with tool use
+4. **Conversation model** — `pkg/conversation/` + store schema changes
+5. **Port `code.sandbox` skill** — wrap existing v2 agent execution as a skill
 
-Delete `pkg/llm/`, `pkg/pipeline/prompts.go`, `pkg/gitprovider/github/indexer.go`.
-Move `SubTaskStatus` + progress helpers from `pkg/pipeline/pipeline.go` to
-`pkg/model/`. Move `verify.go` to `pkg/sandbox/verify.go`. Delete remainder
-of `pkg/pipeline/`. Remove all pipeline/LLM references from `telecoder.go`,
-`internal/engine/engine.go`, and Builder/Config.
+### Phase 2 — Gateway (messaging-first)
 
-**Eval:** `go build ./...` succeeds. `go test ./...` passes (update/remove
-tests that depend on deleted code). No import of `pkg/llm` or `pkg/pipeline`
-anywhere.
+6. **Gateway interface** — `pkg/gateway/` bidirectional channel abstraction
+7. **Telegram gateway** — full send + receive with conversation threading
+8. **Slack gateway** — Socket Mode, thread support
+9. **WebChat gateway** — built-in web UI with conversation view
+10. **GitHub gateway** — issues, PR comments, discussions as conversations
 
-### Task 2: Engine interface and implementations
+### Phase 3 — Heartbeat (proactive)
 
-Create `pkg/agent/` with `Engine` interface:
+11. **Heartbeat engine** — `pkg/heartbeat/` monitor scheduler
+12. **CI monitor** — poll GitHub Actions for failures
+13. **PR watcher** — new PRs, review requests, stale PRs
+14. **Dependency auditor** — security alerts, outdated packages
+15. **Integration** — Heartbeat → Agent Loop → Gateway (proactive messages)
 
-```go
-type Engine interface {
-    Name() string
-    Command(prompt string) string
-    ParseEvent(line string) *model.Event
-}
-```
+### Phase 4 — Skills Library
 
-Implement for Pi, Claude Code, OpenCode, Codex. Each ~50-100 lines.
-Update engine.go to use `Engine.Command()` instead of the hardcoded
-`chatAgentCommand` switch. Wire engine selection via config
-(`TELECODER_CODING_AGENT` env var).
+16. **code.edit** — direct LLM file editing (no sandbox needed for small changes)
+17. **code.search + code.review + code.explain** — read-only code skills
+18. **git.* skills** — full git workflow
+19. **test.run + lint.run** — verification skills
+20. **Community skill loader** — YAML-defined custom skills
 
-**Eval:** `go test ./pkg/agent/...` — unit tests for each engine's
-`Command()` and `ParseEvent()` with sample output lines. Engine.go
-compiles with no direct references to "pi", "claude", "opencode",
-"codex" — only through the interface.
+### Phase 5 — Polish
 
-### Task 3: JSONL event parser
-
-Replace `dispatchLogLine` (the `###TELECODER_` marker parser) with a
-call to `Engine.ParseEvent()`. Each engine normalizes its output format
-to TeleCoder's `model.Event`. The entrypoint's final line
-(`{"telecoder":"done",...}`) is parsed as a completion event.
-
-**Eval:** integration test — feed a sample Pi JSONL session transcript
-and a sample Claude Code stream-json transcript through the parser.
-Verify events are emitted correctly. Feed the old `###TELECODER_DONE###`
-format — verify it's no longer recognized (backward compat broken).
-
-### Task 4: New entrypoint
-
-Replace `docker/entrypoint.sh` with the engine-aware version (case switch
-on `TELECODER_CODING_AGENT`). Delete old entrypoint.
-
-**Eval:** build the Docker image (`make sandbox-image`). Run the
-entrypoint in a container with `TELECODER_CODING_AGENT=pi` and a mock
-prompt — verify it attempts to run `pi -p "..." --mode json`. Repeat
-for `claude-code`, `opencode`, `codex`.
-
-### Task 5: Simplify engine.go
-
-Gut `runSubTask`, `runSandboxRound`, `runSandboxRoundWithAgent` (the
-decompose/plan/review/revision loop). Replace with:
-
-1. Start container
-2. Read stdout via `Engine.ParseEvent()` per line
-3. On completion: check for code changes, commit, push if needed
-4. Create PR via gitprovider
-
-Keep: `runVerify` (moved to sandbox), `MaxRevisions` as a bounded
-retry count for verify failures only, `runSessionMultiStep` simplified
-to sequential prompts in a persistent container, chat mode,
-`CreatePRFromChat`, `CreatePRCommentSession`, idle reaper.
-
-**Eval:** `go test ./internal/engine/...` passes. E2E test
-(`e2e/e2e_test.go`) updated and passes — creates a session, runs a
-stub engine, gets a result. Session lifecycle: pending → running →
-complete works.
-
-### Task 6: Setup wizard
-
-Create `cmd/telecoder/setup.go`. Interactive prompts using
-[huh](https://github.com/charmbracelet/huh):
-
-1. GitHub token (validate with API call)
-2. LLM API key (detect provider from key prefix)
-3. Engine selection (pi/claude-code/opencode/codex)
-4. Channels (Slack/Telegram/none)
-5. Docker check (`docker info`)
-6. Write `~/.telecoder/config.env`
-
-**Eval:** `go build ./cmd/telecoder/` succeeds. Run
-`telecoder setup --non-interactive --github-token=test --engine=pi`
-in test — verify it writes a valid config file.
-
-### Task 7: Dispatcher (LLM-powered routing)
-
-Create `pkg/dispatcher/`. Takes raw event text + channel metadata,
-calls a lightweight LLM (configurable model), returns structured
-decision: `{action, repo, prompt, agent}`.
-
-Channels call the dispatcher instead of parsing keywords/labels
-directly. Dispatcher has a system prompt per channel type.
-
-**Eval:** unit test with mock LLM — send 5 sample events (Slack task,
-Slack question, GitHub issue, Sentry alert, irrelevant message). Verify
-dispatcher returns correct action for each. Test that `action: "ignore"`
-produces no session.
-
-### Task 8: Agent chains
-
-After a session completes, engine checks if the session's result should
-trigger a follow-up. The dispatcher evaluates the result event and may
-spawn a new session.
-
-Chain depth limit (default 3) to prevent loops. Chain ID links related
-sessions.
-
-**Eval:** integration test — create a session that completes with
-`type: pr`. Verify the dispatcher is called with the completion event.
-With a mock dispatcher that returns `action: spawn`, verify a child
-session is created with the correct `chain_id`. Verify chain depth 4
-is rejected.
-
-### Task 9: Batch/cron scheduler
-
-Create `pkg/scheduler/`. Reads `.telecoder/jobs/*.yaml` from a
-configurable directory. Parses schedule (cron syntax), repos, prompts.
-Uses `robfig/cron` for scheduling. Each trigger creates task-mode
-sessions via the engine.
-
-**Eval:** unit test — parse a sample job YAML, verify schedule, repos,
-prompt extracted correctly. Integration test — register a job with
-`@every 1s` schedule, verify a session is created within 2 seconds.
-
-### Task 10: Cross-session memory
-
-Create `pkg/memory/`. Uses SQLite with `sqlite-vec` extension for
-vector search. After each session completes, store a summary embedding.
-Before a new session starts, retrieve top-3 relevant past sessions for
-the same repo. Inject as context in the prompt.
-
-**Eval:** unit test — store 10 session summaries, query with a related
-prompt, verify the returned sessions are semantically relevant (cosine
-similarity > 0.7). Test that sessions from a different repo are not
-returned.
-
-### Task 11: Update web dashboard
-
-Update `web/` to show:
-- Engine name per session
-- Agent chain visualization (linked sessions)
-- Batch job status
-- Session event stream from new JSONL format
-
-**Eval:** `cd web && npm run build` succeeds. Manual verification that
-the dashboard renders sessions with engine labels.
-
-### Task 12: Update CLAUDE.md
-
-Rewrite `CLAUDE.md` to match v2 architecture. Remove references to
-`pkg/llm/`, `pkg/pipeline/`, old marker protocol. Add `pkg/agent/`,
-`pkg/dispatcher/`, `pkg/memory/`, `pkg/scheduler/`.
-
-**Eval:** every package mentioned in CLAUDE.md exists. Every deleted
-package is not mentioned.
+21. **Local mode** — `telecoder start` for personal use
+22. **Multi-user** — user management for server mode
+23. **Quiet hours + notification preferences**
+24. **WhatsApp + Discord gateways**
+25. **Memory improvements** — conversation-aware retrieval
 
 ---
 
 ## Open Questions
 
-1. Use Rivet's Sandbox Agent SDK instead of our own engine abstraction?
-   It already normalizes Pi, OpenCode, Claude Code, Codex, and Amp.
-2. Dispatcher model: small (Haiku, GPT-4o-mini) vs configurable?
-3. Loop prevention: how does the dispatcher know when a chain is done?
-4. Memory scope: per-repo or per-team? Cross-repo has privacy implications.
-5. Per-engine slim Docker images vs one image with all engines?
+1. **LLM tool-use format**: Use native function calling (Claude/OpenAI) or our own tool-use protocol?
+2. **WhatsApp**: Baileys (unofficial, free) vs Business API (official, paid)?
+3. **Conversation context window**: How much history to send per LLM call? Summarize old messages?
+4. **Skill permissions**: Should some skills require user confirmation? (e.g., `git.pr`, `shell.exec`)
+5. **Multi-repo conversations**: Can one conversation span multiple repos?
+6. **Offline mode**: Should the Agent Loop work with local models (Ollama)?
