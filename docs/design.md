@@ -1,429 +1,470 @@
-# TeleCoder v3 Design
+# TeleCoder — Design for Maximum Adoption
 
-> Your personal AI coding assistant. Any channel. Any repo. The lobster's coding cousin. 🦀
-
-## What It Is
-
-TeleCoder is an **OpenClaw-style personal AI assistant built for coding**. It lives
-on your messaging channels (WhatsApp, Telegram, Slack, Discord), monitors your
-repos, and does real coding work — proactively and on demand.
-
-Unlike v2 (a task-runner that produces PRs), v3 is a **coding companion** that:
-- Messages you when CI breaks, a PR needs review, or deps are outdated
-- Fixes things autonomously when you tell it to
-- Answers code questions in natural conversation
-- Runs anywhere: your laptop, a VPS, or your team's server
-
-```
-You (Telegram): "hey, tests are failing on main — can you look?"
-TeleCoder:      "Looking... it's a nil pointer in user_service.go:47.
-                 The recent merge removed the null check. Want me to fix it?"
-You:            "yeah go for it"
-TeleCoder:      "Fixed and pushed → PR #203. Tests pass now."
-```
-
-```
-TeleCoder (proactive, 9am Monday):
-  "3 Dependabot alerts on myorg/api — 1 critical (lodash prototype pollution).
-   Want me to update and run the test suite?"
-```
+> The open framework for async coding agents.
+> Any model. Any codebase. Any scale.
 
 ---
 
-## Architecture: Gateway → Agent Loop → Heartbeat
+## Thesis
 
-Inspired by OpenClaw's three-pillar architecture, adapted for coding:
+TeleCoder should be to **async coding agents** what Docker is to containers
+or FastAPI is to Python APIs: the obvious default that everyone reaches for.
+
+The insight from Stripe Minions: the coding agent (Claude Code, Codex, etc.)
+is ~20% of the value. The other 80% is the **orchestration around it**:
+
+- Pre-computing relevant context (rules, code, past sessions)
+- Blueprint-based workflow (deterministic verification between agentic steps)
+- Sandbox isolation with pre-warming
+- Feedback loops (lint → fix → test → fix)
+- PR creation with proper descriptions
+- CI integration and bounded retries
+
+TeleCoder owns that 80%. It doesn't replace Claude Code — it makes Claude Code
+(and Codex, and OpenCode, and Aider, and your custom agent) work reliably in
+production.
+
+### What makes projects maximally popular
+
+1. **Clear identity** — one sentence explains what it is
+2. **Instant gratification** — working in 30 seconds
+3. **Small core** — fits in your head (and in an AI's context window)
+4. **Low floor, high ceiling** — easy to start, scales to Stripe
+5. **Extensible without complexity** — plugins, not config sprawl
+
+TeleCoder's identity: **"Run any coding agent in a sandbox with blueprint
+orchestration. Send a task, get a PR."**
+
+---
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                       TeleCoder                          │
+┌──────────────────────────────────────────────────────────┐
+│                       TeleCoder                           │
 │                                                          │
-│  ┌──────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │ Gateway   │───▶│  Agent Loop  │◀───│  Heartbeat   │   │
-│  │           │    │              │    │              │   │
-│  │ WhatsApp  │    │ LLM brain    │    │ CI monitor   │   │
-│  │ Telegram  │    │ Skill router │    │ PR watcher   │   │
-│  │ Slack     │    │ Conversation │    │ Dep auditor  │   │
-│  │ Discord   │    │ Memory       │    │ Repo health  │   │
-│  │ GitHub    │    │ Tool use     │    │ Cron jobs    │   │
-│  │ WebChat   │    │              │    │ Alert feeds  │   │
-│  └──────────┘    └──────┬───────┘    └──────────────┘   │
-│                         │                                │
-│              ┌──────────▼───────────┐                    │
-│              │  Skill Executor      │                    │
-│              │                      │                    │
-│              │  Sandbox (Docker)    │                    │
-│              │  Git operations      │                    │
-│              │  CI/CD APIs          │                    │
-│              │  Code analysis       │                    │
-│              │  File system         │                    │
-│              └──────────────────────┘                    │
+│  ┌──────────┐   ┌──────────┐   ┌───────────┐            │
+│  │ Channels  │──▶│  Engine   │──▶│ Blueprint │            │
+│  │           │   │          │   │           │            │
+│  │ CLI       │   │ Sessions │   │ context   │            │
+│  │ HTTP API  │   │ Events   │   │ implement │            │
+│  │ Slack     │   │ Memory   │   │ lint+fix  │──▶ Sandbox │
+│  │ Telegram  │   │ Dispatch │   │ test      │   (Docker) │
+│  │ GitHub    │   │          │   │ fix       │            │
+│  │ Linear    │   │          │   │ push+PR   │            │
+│  │ Jira      │   │          │   │           │            │
+│  └──────────┘   └──────────┘   └───────────┘            │
 │                                                          │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  Store (SQLite)                                   │   │
-│  │  Conversations · Memory · Repos · Heartbeat state │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  Store (SQLite) · Memory (code+notes+sessions)    │  │
+│  │  Pre-warm Pool · Event Bus (SSE)                  │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
 
-### Gateway
+Four layers, each independently useful:
 
-The Gateway handles all inbound/outbound messaging. Every channel is a
-bidirectional transport — TeleCoder both receives and sends messages.
+| Layer | What | Lines | You need it when... |
+|-------|------|-------|---------------------|
+| **Sandbox** | Docker container lifecycle, pre-warm pool | ~500 | You want isolated execution |
+| **Engine** | Session management, events, memory, dispatch | ~1500 | You want to orchestrate agents |
+| **Blueprint** | Workflow orchestration (deterministic + agentic steps) | ~500 | You want reliable multi-step flows |
+| **Channels** | Slack, Telegram, GitHub, CLI, HTTP API | ~200 each | You want integrations |
 
-**Channels (messaging-first):**
-- WhatsApp (via WhatsApp Business API or Baileys)
-- Telegram
-- Slack
-- Discord
-- GitHub (issues, PR comments, discussions)
-- WebChat (built-in web UI)
-- Linear, Jira (webhook → outbound via API)
+Total core: **~4500 lines of Go**. The rest is channels, tests, CLI, and web UI.
 
-**Key difference from v2:** Channels are the *primary* interface, not a bolt-on.
-The Gateway maintains per-user conversation state, not per-session. You talk to
-TeleCoder like a person, not like a job queue.
+---
 
-### Agent Loop
+## Blueprints — The Core Differentiator
 
-The brain. An LLM-powered agent that:
-1. Understands your message in context (conversation history + repo knowledge)
-2. Decides which Skills to invoke (or just responds conversationally)
-3. Executes Skills and reports results
-4. Maintains persistent memory across conversations
-
-**Not a dispatcher** — the Agent Loop is a full reasoning agent, not a router.
-It can plan multi-step workflows, ask clarifying questions, and hold context
-across hours or days of conversation.
+A blueprint is a **Go function** that defines the workflow for processing a
+coding task. It mixes deterministic steps (lint, test, git) with agentic steps
+(implement, fix). This is the pattern Stripe proved works at scale.
 
 ```go
-type AgentLoop interface {
-    // HandleMessage processes an inbound message and returns responses.
-    // The agent decides what skills to invoke, if any.
-    HandleMessage(ctx context.Context, conv *Conversation, msg *Message) ([]*Message, error)
+// Blueprint defines a workflow for processing a coding task.
+// It receives a Run with building blocks and orchestrates them.
+type Blueprint func(ctx context.Context, run *Run) error
+```
 
-    // HandleHeartbeatEvent processes a proactive event from the Heartbeat.
-    // Returns messages to send to the user, or nil to stay silent.
-    HandleHeartbeatEvent(ctx context.Context, event *HeartbeatEvent) ([]*Message, error)
+### The Default Blueprint
+
+```go
+func DefaultBlueprint(ctx context.Context, run *Run) error {
+    // 1. Gather context (deterministic)
+    //    Pull relevant code, notes, past sessions → enrich prompt
+    run.GatherContext()
+
+    // 2. Implement (agentic)
+    //    Run the coding agent with the enriched prompt
+    if err := run.Implement(); err != nil {
+        return err
+    }
+
+    // 3. Lint + auto-fix (deterministic)
+    //    Run linter, apply auto-fixes, re-run to verify
+    run.LintFix()
+
+    // 4. Test (deterministic)
+    //    Run the project's test suite
+    testResult := run.Test()
+
+    // 5. Fix failures (agentic, bounded retries)
+    //    If tests fail, ask the agent to fix — up to MaxRevisions rounds
+    for round := 0; !testResult.Passed && round < run.MaxRevisions; round++ {
+        run.Fix("Tests failed:\n" + testResult.Output)
+        run.LintFix()
+        testResult = run.Test()
+    }
+
+    // 6. Push + PR (deterministic)
+    //    Commit, push to branch, create PR with description
+    run.Push()
+    run.CreatePR()
+
+    return nil
 }
 ```
 
-**Model-agnostic:** Works with Claude, GPT, DeepSeek, Gemini, local models.
-The LLM is a pluggable interface, not hardcoded.
+No Blueprint type. No Node interface. No DAG executor. No YAML. **Just a
+function.** This is the NanoClaw principle: code IS configuration.
 
-### Heartbeat
+### Why this matters
 
-The proactive engine. Runs on a schedule, monitors external systems, and
-feeds events into the Agent Loop for decision-making.
+Every other open-source coding agent is a **single loop**: prompt → agent →
+output. That works for demos. It doesn't work for production, because:
 
-**Built-in monitors:**
-- **CI/CD** — Poll GitHub Actions, GitLab CI, Buildkite for failures
-- **PR watcher** — New PRs, review requests, stale PRs, merge conflicts
-- **Dependency audit** — Dependabot/Renovate alerts, outdated packages
-- **Repo health** — Flaky tests, code coverage drops, TODO accumulation
-- **Alert feeds** — Sentry, PagerDuty, Datadog (via webhooks)
-- **Cron jobs** — User-defined scheduled tasks (same YAML as v2)
+- Agents skip linting. Blueprints don't.
+- Agents don't know when to stop retrying. Blueprints bound it.
+- Agents can't mix deterministic and agentic steps. Blueprints compose them.
+- Agents produce different output formats. Blueprints normalize the flow.
 
-The Heartbeat doesn't act directly — it sends events to the Agent Loop, which
-decides whether to message the user, act autonomously, or stay silent.
+Stripe learned this the hard way and built blueprints internally. TeleCoder
+makes the pattern open source.
+
+### Custom Blueprints
 
 ```go
-type Monitor interface {
-    Name() string
-    // Check runs the monitor and returns events (if any).
-    Check(ctx context.Context, repos []RepoConfig) ([]HeartbeatEvent, error)
-    // Interval returns how often this monitor should run.
-    Interval() time.Duration
+// Multi-agent blueprint: plan with a fast model, implement with a strong one
+func PlanAndImplement(ctx context.Context, run *Run) error {
+    run.GatherContext()
+
+    // Use a fast model to create a detailed plan
+    plan, err := run.RunAgentWith("haiku", "Create a step-by-step plan for: "+run.Prompt)
+    if err != nil { return err }
+
+    // Use a strong model to implement the plan
+    run.SetPrompt("Implement this plan:\n" + plan)
+    if err := run.Implement(); err != nil { return err }
+
+    run.LintFix()
+    run.Test()
+    run.Push()
+    run.CreatePR()
+    return nil
+}
+
+// Security-focused blueprint: scan for vulnerabilities before PR
+func SecureBuild(ctx context.Context, run *Run) error {
+    run.GatherContext()
+    if err := run.Implement(); err != nil { return err }
+    run.LintFix()
+    run.Test()
+
+    // Run security scanner (deterministic)
+    scanResult := run.Exec("semgrep", "--config=auto", ".")
+    if scanResult.ExitCode != 0 {
+        run.Fix("Security issues found:\n" + scanResult.Output)
+    }
+
+    run.Push()
+    run.CreatePR()
+    return nil
+}
+
+// CI-aware blueprint: wait for CI and fix failures
+func CIAware(ctx context.Context, run *Run) error {
+    run.GatherContext()
+    if err := run.Implement(); err != nil { return err }
+    run.LintFix()
+    run.Test()
+    run.Push()
+    pr := run.CreatePR()
+
+    // Wait for CI (deterministic — polls GitHub Actions)
+    ciResult := run.WaitForCI(pr, 10*time.Minute)
+    if !ciResult.Passed {
+        run.Fix("CI failed:\n" + ciResult.Logs)
+        run.LintFix()
+        run.Test()
+        run.PushAmend()
+    }
+
+    return nil
 }
 ```
 
----
-
-## Skills (replacing monolithic coding agents)
-
-v2 had 4 monolithic coding agents (Pi, Claude Code, OpenCode, Codex) that
-did everything. v3 breaks capabilities into **focused Skills** that the
-Agent Loop composes as needed.
-
-### Core Skills (built-in)
-
-| Skill | What it does |
-|-------|-------------|
-| `code.edit` | Edit files in a repo (direct LLM-powered edits) |
-| `code.sandbox` | Run a coding agent in a Docker sandbox (Pi, Claude Code, etc.) |
-| `code.search` | Search codebases (grep, AST, semantic) |
-| `code.review` | Review a PR or diff for issues |
-| `code.explain` | Explain code, architecture, or patterns |
-| `git.commit` | Stage, commit, push changes |
-| `git.pr` | Create, update, or merge pull requests |
-| `git.branch` | Create, switch, delete branches |
-| `git.diff` | Show diffs, compare branches |
-| `test.run` | Run test suites, report results |
-| `test.write` | Generate tests for given code |
-| `lint.run` | Run linters, format code |
-| `deps.audit` | Check for outdated/vulnerable dependencies |
-| `deps.update` | Update dependencies and verify |
-| `ci.status` | Check CI/CD pipeline status |
-| `ci.logs` | Fetch and analyze CI failure logs |
-| `shell.exec` | Run arbitrary shell commands in sandbox |
-| `web.fetch` | Fetch and summarize web pages/docs |
-| `repo.setup` | Clone, configure, and analyze a new repo |
-| `memory.recall` | Search past conversations and sessions |
-
-### Skill Interface
+### The Run Object
 
 ```go
-type Skill interface {
-    // Name returns the skill identifier (e.g., "code.edit").
-    Name() string
+// Run provides building blocks that blueprints compose.
+type Run struct {
+    Session     *model.Session
+    Prompt      string          // the enriched prompt
+    ContainerID string          // active sandbox container
+    MaxRevisions int
 
-    // Description returns a human-readable description for the LLM to decide when to use it.
-    Description() string
-
-    // Parameters returns the JSON schema for this skill's input.
-    Parameters() json.RawMessage
-
-    // Execute runs the skill and returns a result.
-    Execute(ctx context.Context, params json.RawMessage) (*SkillResult, error)
+    engine  *Engine             // access to sandbox, store, memory, git
+    agent   agent.CodingAgent   // the coding agent to use
 }
 
-type SkillResult struct {
-    Output   string   // Text output to include in conversation
-    Files    []string // Files created or modified
-    Artifacts []Artifact // PRs, commits, etc.
-    Error    string   // Error message if failed
-}
+// Deterministic steps
+func (r *Run) GatherContext()                           // enrich prompt with memory
+func (r *Run) LintFix()                                 // run linter with --fix
+func (r *Run) Test() *VerifyResult                      // run test suite
+func (r *Run) Push()                                    // git commit + push
+func (r *Run) PushAmend()                               // amend + force push
+func (r *Run) CreatePR() *PRResult                      // create GitHub PR
+func (r *Run) WaitForCI(pr *PRResult, timeout time.Duration) *CIResult
+func (r *Run) Exec(cmd ...string) *ExecResult           // run arbitrary command
+
+// Agentic steps
+func (r *Run) Implement() error                         // run coding agent
+func (r *Run) Fix(feedback string) error                // run agent with fix prompt
+func (r *Run) RunAgentWith(model, prompt string) (string, error)
+
+// State
+func (r *Run) SetPrompt(prompt string)
+func (r *Run) Emit(eventType, data string)              // emit SSE event
 ```
-
-### Community Skills
-
-Like OpenClaw's AgentSkills, users can add custom skills:
-
-```yaml
-# ~/.telecoder/skills/deploy-staging.yaml
-name: deploy.staging
-description: "Deploy the current branch to the staging environment"
-command: |
-  cd /workspace/repo
-  make deploy-staging
-  echo "Deployed to https://staging.example.com"
-requires: [sandbox]
-```
-
-Or as Go plugins:
-
-```go
-type DeploySkill struct{}
-func (s *DeploySkill) Name() string { return "deploy.staging" }
-// ...
-```
-
-The `code.sandbox` skill wraps the existing v2 coding agents (Pi, Claude Code,
-OpenCode, Codex) as a single skill. For complex tasks, the Agent Loop invokes
-`code.sandbox` which spins up a full Docker sandbox just like v2 — but now it's
-one tool among many, not the only way to interact.
 
 ---
 
-## Conversation Model (replacing Sessions)
+## Scoped Rules (Stripe Pattern)
 
-v2's model: **Session** = one task, one sandbox, one result.
-
-v3's model: **Conversation** = ongoing relationship with a user about their repos.
+Stripe discovered that **what's good for human developers is good for agents**.
+Every codebase has conventions documented in `.cursorrules`, `CLAUDE.md`,
+`AGENTS.md`, `.github/copilot-instructions.md`, etc. TeleCoder auto-discovers
+and injects these.
 
 ```go
-type Conversation struct {
-    ID        string
-    UserID    string       // The human
-    Channel   string       // Where this conversation lives
-    Repos     []string     // Repos in context
-    Messages  []Message    // Full history
-    Memory    []MemoryRef  // Relevant past context (injected)
-    State     ConvState    // active, paused, archived
-    CreatedAt time.Time
-    UpdatedAt time.Time
+// During GatherContext(), the blueprint:
+// 1. Searches for rules files in the repo
+// 2. Finds the most relevant rules for the current task
+// 3. Prepends them to the prompt
+
+// Auto-discovered files (checked in order):
+var rulesFiles = []string{
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".cursorrules",
+    ".github/copilot-instructions.md",
+    ".telecoder/rules.md",
+    ".telecoder/rules/*.md",
 }
 ```
 
-A conversation can span days. The Agent Loop has context of what you discussed
-yesterday. When you say "that PR from earlier", it knows which one.
-
-**Sessions still exist** internally — when the Agent Loop invokes `code.sandbox`,
-it creates a sandbox session. But users never see "sessions". They see a
-conversation thread on Telegram.
+This is zero-config for repos that already have agent rules — which is most
+active repos in 2026.
 
 ---
 
-## Deployment Modes
+## What TeleCoder Already Has (v2, Complete)
 
-### Local (personal)
+| Component | Status | Lines |
+|-----------|--------|-------|
+| Docker sandbox with pre-warm pool | Done | ~500 |
+| Engine (sessions, events, memory) | Done | ~1250 |
+| 4 coding agents (OpenCode, Claude Code, Codex, Pi) | Done | ~200 |
+| LLM-powered dispatcher | Done | ~140 |
+| Agent chains (depth-limited) | Done | ~70 |
+| Codebase memory (code index + notes + sessions) | Done | ~1000 |
+| Verify (auto-detect test/lint commands) | Done | ~40 |
+| 5 channels (Slack, Telegram, GitHub, Linear, Jira) | Done | ~1400 |
+| Cron scheduler | Done | ~130 |
+| HTTP API + SSE | Done | ~375 |
+| Web dashboard | Done | ~400 (TS) |
+| CLI (serve, run, list, status, config) | Done | ~650 |
+| Builder pattern (plug anything) | Done | ~200 |
+| SQLite store | Done | ~375 |
+| Event bus | Done | ~70 |
+| **Total** | | **~6800** |
 
-```bash
-telecoder start
-# → Connects to Telegram, starts Heartbeat, ready to chat
-```
-
-Runs on your laptop or a Raspberry Pi. One user. Docker for sandboxes.
-Config in `~/.telecoder/config.yaml`.
-
-### Server (team)
-
-```bash
-telecoder serve --multi-user
-# → HTTP API + all channels, multi-user, shared repos
-```
-
-Runs on a VPS. Multiple users. Each user has their own conversations but
-shares repo access. Admin dashboard.
-
-### Config file
-
-```yaml
-# ~/.telecoder/config.yaml
-llm:
-  provider: anthropic          # or openai, deepseek, ollama, etc.
-  model: claude-sonnet-4-6
-  api_key: ${ANTHROPIC_API_KEY}
-
-channels:
-  telegram:
-    bot_token: ${TELEGRAM_BOT_TOKEN}
-  slack:
-    bot_token: ${SLACK_BOT_TOKEN}
-    app_token: ${SLACK_APP_TOKEN}
-  # whatsapp:
-  #   ...
-
-github:
-  token: ${GITHUB_TOKEN}
-
-repos:
-  - name: myorg/api
-    branch: main
-    monitors: [ci, deps, prs]
-  - name: myorg/frontend
-    branch: main
-    monitors: [ci, prs]
-
-heartbeat:
-  enabled: true
-  ci_poll_interval: 5m
-  pr_poll_interval: 10m
-  dep_audit_interval: 24h
-  quiet_hours: "22:00-08:00"   # Don't message during these hours
-
-sandbox:
-  image: telecoder-sandbox
-  docker_network: telecoder-net
-
-memory:
-  enabled: true
-  embedder: openai              # or local (sentence-transformers)
-```
+The foundation is solid. What's needed for maximum adoption is **not more
+features** — it's refinement, positioning, and the blueprint pattern.
 
 ---
 
-## What We Keep from v2
+## What to Build Next
 
-| Component | Status |
-|-----------|--------|
-| `pkg/sandbox/` (Docker runtime) | **Keep** — core infrastructure |
-| `pkg/store/sqlite/` | **Keep + extend** — add conversations, memory tables |
-| `pkg/eventbus/` | **Keep** — still useful for real-time events |
-| `pkg/gitprovider/` | **Keep** — GitHub PR/webhook integration |
-| `pkg/model/` | **Refactor** — new types (Conversation, Skill, HeartbeatEvent) |
-| `pkg/memory/` | **Keep + extend** — conversation-level memory |
-| `pkg/agent/` | **Refactor** → becomes `code.sandbox` skill |
-| `pkg/dispatcher/` | **Delete** — replaced by Agent Loop |
-| `pkg/scheduler/` | **Refactor** → becomes part of Heartbeat |
-| `pkg/channel/` | **Refactor** — bidirectional Gateway channels |
-| `internal/engine/` | **Refactor** → Agent Loop + Skill Executor |
-| `internal/httpapi/` | **Keep + extend** — add conversation endpoints |
-| `cmd/telecoder/` | **Refactor** — `start` (local), `serve` (server) |
-| `web/` | **Refactor** — conversation UI, not session list |
-| `docker/entrypoint.sh` | **Keep** — sandbox still needs it |
+### Phase 1: Blueprints (the differentiator)
 
----
+**Goal**: Extract the current hardcoded `runSubTask()` flow into the blueprint
+pattern. Zero behavior change — just make the orchestration explicit and
+customizable.
 
-## New Packages
+| Task | What | Files |
+|------|------|-------|
+| 1.1 | Define `Blueprint` type and `Run` struct | `pkg/blueprint/blueprint.go` |
+| 1.2 | Implement `DefaultBlueprint` (mirrors current flow) | `pkg/blueprint/default.go` |
+| 1.3 | Split `runVerify()` into `LintFix()` and `Test()` | `pkg/blueprint/steps.go` |
+| 1.4 | Wire blueprints into engine (`WithBlueprint()` on Builder) | `telecoder.go`, `engine.go` |
+| 1.5 | Add `WaitForCI()` step (poll GitHub Actions) | `pkg/blueprint/ci.go` |
+| 1.6 | Add scoped rules discovery in `GatherContext()` | `pkg/blueprint/rules.go` |
 
-```
-pkg/gateway/          Bidirectional channel abstraction
-pkg/gateway/telegram/  Telegram (send + receive)
-pkg/gateway/slack/     Slack (send + receive)
-pkg/gateway/whatsapp/  WhatsApp
-pkg/gateway/discord/   Discord
-pkg/gateway/webchat/   Built-in WebChat
-pkg/agentloop/        LLM-powered reasoning agent
-pkg/skill/            Skill interface + registry
-pkg/skill/code/       code.edit, code.search, code.review, code.explain
-pkg/skill/git/        git.commit, git.pr, git.branch, git.diff
-pkg/skill/test/       test.run, test.write
-pkg/skill/sandbox/    code.sandbox (wraps v2 coding agents)
-pkg/skill/deps/       deps.audit, deps.update
-pkg/skill/ci/         ci.status, ci.logs
-pkg/skill/shell/      shell.exec
-pkg/skill/web/        web.fetch
-pkg/heartbeat/        Proactive monitoring engine
-pkg/heartbeat/ci/     CI/CD monitor
-pkg/heartbeat/pr/     PR watcher
-pkg/heartbeat/deps/   Dependency auditor
-pkg/heartbeat/cron/   Cron job runner (from v2 scheduler)
-pkg/conversation/     Conversation state management
-pkg/llm/              LLM provider interface (Anthropic, OpenAI, etc.)
-```
+**Eval**: `go test ./...` passes. Default behavior identical. Custom blueprints
+work via Builder.
 
----
+### Phase 2: Memory Security (trust)
 
-## Implementation Plan
+Companies won't use a framework that leaks secrets into agent prompts.
 
-### Phase 1 — Core Agent Loop (replace engine with conversational agent)
+| Task | What | Files |
+|------|------|-------|
+| 2.1 | Secret scanner (regex: AWS, GH tokens, JWT, keys) | `pkg/memory/security.go` |
+| 2.2 | Integrate scanner into `insertChunk()` | `pkg/memory/codebase.go` |
+| 2.3 | Skip sensitive files in `IsIndexable()` | `pkg/memory/chunker.go` |
+| 2.4 | Content sanitization in `enrichPrompt()` | `pkg/memory/sanitize.go` |
+| 2.5 | Audit events on memory operations | `pkg/memory/audit.go` |
 
-1. **LLM provider interface** — `pkg/llm/` with Anthropic + OpenAI implementations
-2. **Skill interface + registry** — `pkg/skill/` with core skill definitions
-3. **Agent Loop** — `pkg/agentloop/` — LLM-powered reasoning with tool use
-4. **Conversation model** — `pkg/conversation/` + store schema changes
-5. **Port `code.sandbox` skill** — wrap existing v2 agent execution as a skill
+**Eval**: No `.env` or `*.pem` files indexed. No API keys in retrieved chunks.
 
-### Phase 2 — Gateway (messaging-first)
+### Phase 3: Developer Experience (adoption)
 
-6. **Gateway interface** — `pkg/gateway/` bidirectional channel abstraction
-7. **Telegram gateway** — full send + receive with conversation threading
-8. **Slack gateway** — Socket Mode, thread support
-9. **WebChat gateway** — built-in web UI with conversation view
-10. **GitHub gateway** — issues, PR comments, discussions as conversations
+| Task | What |
+|------|------|
+| 3.1 | `docker compose up` quickstart (one command, works) |
+| 3.2 | "Build your first async agent in 5 minutes" tutorial |
+| 3.3 | Example blueprints gallery (security, CI-aware, multi-agent) |
+| 3.4 | README rewrite focused on the blueprint story |
+| 3.5 | GitHub Actions template for "TeleCoder as CI bot" |
 
-### Phase 3 — Heartbeat (proactive)
+### Phase 4: Ecosystem (network effects)
 
-11. **Heartbeat engine** — `pkg/heartbeat/` monitor scheduler
-12. **CI monitor** — poll GitHub Actions for failures
-13. **PR watcher** — new PRs, review requests, stale PRs
-14. **Dependency auditor** — security alerts, outdated packages
-15. **Integration** — Heartbeat → Agent Loop → Gateway (proactive messages)
-
-### Phase 4 — Skills Library
-
-16. **code.edit** — direct LLM file editing (no sandbox needed for small changes)
-17. **code.search + code.review + code.explain** — read-only code skills
-18. **git.* skills** — full git workflow
-19. **test.run + lint.run** — verification skills
-20. **Community skill loader** — YAML-defined custom skills
-
-### Phase 5 — Polish
-
-21. **Local mode** — `telecoder start` for personal use
-22. **Multi-user** — user management for server mode
-23. **Quiet hours + notification preferences**
-24. **WhatsApp + Discord gateways**
-25. **Memory improvements** — conversation-aware retrieval
+| Task | What |
+|------|------|
+| 4.1 | MCP server — expose memory as MCP tools |
+| 4.2 | MCP client — consume external tools as memory providers |
+| 4.3 | Ollama embedder — zero-API-key local memory |
+| 4.4 | Webhook-driven reindexing (reindex on git push) |
+| 4.5 | Provider interfaces for memory (Qdrant, Mem0, etc.) |
 
 ---
 
-## Open Questions
+## What NOT to Build (Yet)
 
-1. **LLM tool-use format**: Use native function calling (Claude/OpenAI) or our own tool-use protocol?
-2. **WhatsApp**: Baileys (unofficial, free) vs Business API (official, paid)?
-3. **Conversation context window**: How much history to send per LLM call? Summarize old messages?
-4. **Skill permissions**: Should some skills require user confirmation? (e.g., `git.pr`, `shell.exec`)
-5. **Multi-repo conversations**: Can one conversation span multiple repos?
-6. **Offline mode**: Should the Agent Loop work with local models (Ollama)?
+The v3 design.md proposed a full conversational agent (Agent Loop, Heartbeat,
+Skills, Gateway). That's the right long-term vision, but it's **too much
+surface area for adoption**.
+
+Projects get popular by doing **one thing brilliantly**, then expanding:
+- Docker started as containers, then added Compose, Swarm, Hub
+- FastAPI started as a framework, then added background tasks, WebSockets
+- Next.js started as SSR React, then added API routes, middleware
+
+TeleCoder's "one thing": **blueprint-orchestrated async coding agents in
+sandboxes**. Once that's the default, expand to conversations, heartbeat, and
+proactive monitoring.
+
+### Defer to Phase 2 (after adoption)
+
+- Full conversational agent (Agent Loop replaces Engine)
+- Heartbeat (proactive CI/PR/dep monitoring)
+- Bidirectional gateway channels
+- Skill system (code.edit, code.review, etc.)
+- WhatsApp/Discord channels
+- Multi-user/team mode
+
+These are valuable but not necessary for the core value proposition.
+
+---
+
+## Design Principles (Lessons Learned)
+
+### From NanoClaw
+
+1. **Small auditable core** — The entire engine + blueprint + sandbox fits in
+   ~4500 lines. Any AI agent can read, understand, and modify the whole thing.
+   This is the meta-insight: the framework is maximally forkable because it's
+   small enough for AI to operate on.
+
+2. **Code IS configuration** — No YAML schema to learn. Blueprints are Go
+   functions. Skills (future) are markdown files. If you can read the code,
+   you understand the system.
+
+3. **Containers by default** — Every coding task runs in an isolated Docker
+   container. No scary permissions. No `--dangerously-skip-permissions`.
+
+### From Stripe Minions
+
+4. **Hybrid orchestration** — Mix deterministic steps (lint, test, git) with
+   agentic steps (implement, fix). This is the blueprint pattern.
+
+5. **Shift feedback left** — Lint locally before pushing. Test locally before
+   creating the PR. Don't waste CI cycles on obvious failures.
+
+6. **Bounded retries** — MaxRevisions = 1-2. More retries don't help — they
+   waste tokens. Fix the prompt or the blueprint instead.
+
+7. **Scoped rules** — What's good for human developers is good for agents.
+   Discover and inject `CLAUDE.md`, `.cursorrules`, etc. automatically.
+
+8. **Pre-warm everything** — Sandbox pool, code index, rules cache. The first
+   session should feel instant.
+
+### For Maximum Adoption
+
+9. **30-second quickstart** — `docker compose up` and `curl`. No setup wizard,
+   no account creation, no cloud dependency. Just works.
+
+10. **Agent-agnostic** — Support every coding agent. Don't pick winners. The
+    user chooses. TeleCoder orchestrates.
+
+11. **Progressive disclosure** — Default blueprint works with zero config.
+    Custom blueprints for power users. Provider interfaces for companies.
+    Each level is opt-in.
+
+12. **Forkability over extensibility** — A developer who forks TeleCoder and
+    modifies the source should have an easier time than one who writes plugins.
+    Keep the core small enough to modify directly.
+
+---
+
+## Comparison
+
+| Feature | TeleCoder | Claude Code | Codex CLI | SWE-agent |
+|---------|-----------|-------------|-----------|-----------|
+| Async (fire-and-forget) | Yes | No | Yes | No |
+| Blueprint orchestration | Yes | No | No | No |
+| Agent-agnostic | Yes (4 agents) | Claude only | OpenAI only | Any LLM |
+| Sandbox by default | Docker | Optional | Yes | Docker |
+| Pre-warm pool | Yes | No | No | No |
+| Codebase memory | Yes | Yes | No | No |
+| Multi-channel (Slack, etc.) | Yes | No | No | No |
+| Verify + retry | Yes | No | No | Yes |
+| Scoped rules | Yes | CLAUDE.md | No | No |
+| Lines of core code | ~4500 | ~50K+ | ~10K+ | ~5K |
+
+TeleCoder's unique position: it's the **orchestration layer** that makes any
+of these agents work better.
+
+---
+
+## Success Metrics
+
+TeleCoder is maximally popular when:
+
+1. **"telecoder" is the first thing you google** when you want to run a coding
+   agent in CI, on a cron, or from Slack.
+
+2. **Companies fork it** as the foundation for their internal coding agent
+   infra (like Stripe did with their own system).
+
+3. **The blueprint pattern becomes a standard** — other tools adopt the same
+   concept of hybrid deterministic + agentic orchestration.
+
+4. **Contributors add agents, channels, and blueprints** without touching the
+   core engine — the extension points are that clean.
+
+5. **The README example works in 30 seconds** for any developer with Docker
+   installed.
