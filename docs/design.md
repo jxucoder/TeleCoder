@@ -68,225 +68,273 @@ Four layers, each independently useful:
 
 | Layer | What | Lines | You need it when... |
 |-------|------|-------|---------------------|
-| **Sandbox** | Docker container lifecycle, pre-warm pool | ~500 | You want isolated execution |
+| **Sandbox** | Container lifecycle, pre-warm pool (Docker default; E2B, Modal, Fly pluggable) | ~500 | You want isolated execution |
 | **Engine** | Session management, events, memory, dispatch | ~1500 | You want to orchestrate agents |
-| **Blueprint** | Workflow orchestration (deterministic + agentic steps) | ~500 | You want reliable multi-step flows |
+| **Blueprint + Guardrails** | English workflow descriptions + deterministic quality/security checks | ~500 | You want reliable multi-step flows |
 | **Channels** | Slack, Telegram, GitHub, CLI, HTTP API | ~200 each | You want integrations |
 
 Total core: **~4500 lines of Go**. The rest is channels, tests, CLI, and web UI.
 
 ---
 
-## Blueprints — The Core Differentiator
+## The Two Core Ideas
 
-A blueprint is a **Go function** that defines the workflow for processing a
-task. Not necessarily a "coding task" — it could be a question, audit, review,
-migration, or anything you'd ask an agent to do. Blueprints mix deterministic
-steps (lint, test, git) with agentic steps (implement, fix, analyze). This is
-the pattern Stripe proved works at scale.
+### 1. Blueprints — English-First Workflow Descriptions
+
+A blueprint is a **natural language description** of what the agent should do.
+Not Go. Not YAML. Not shell scripts. **English.**
+
+```markdown
+# .telecoder/blueprint.md
+
+You are a coding agent working on this repository.
+
+When given a task:
+1. Understand the codebase context and coding conventions
+2. Implement the requested changes
+3. Make sure all tests pass
+4. If tests fail, fix your changes (up to 2 attempts)
+5. Write a clear PR description explaining what changed and why
+
+If the task is a question (not a code change), just answer it directly.
+```
+
+That's it. Drop this file in your repo and TeleCoder uses it to instruct the
+agent. Anyone can write a blueprint. Anyone can customize the workflow. No
+programming language required.
+
+The framework prepends the blueprint + gathered context to the agent's prompt,
+then dispatches to whatever agent is configured (Claude Code, Codex,
+OpenCode, etc.). The agent handles the multi-step execution internally — these
+are powerful coding agents, they know how to plan and execute.
+
+**Why English?** Because English is the most universal "programming language."
+A PM can write a blueprint. A security team can write a blueprint. An intern
+can write a blueprint. English blueprints scale to any team, any skill level.
+
+**Different blueprints for different tasks:**
+
+```markdown
+# .telecoder/blueprints/review.md
+You are a code reviewer. Analyze the PR diff carefully.
+List issues by severity (critical, warning, nit).
+Focus on: correctness, security, performance, readability.
+Never suggest style changes that contradict the project's linter config.
+```
+
+```markdown
+# .telecoder/blueprints/security-audit.md
+You are a security auditor. Scan the codebase for vulnerabilities.
+Run semgrep and trivy if available. Synthesize findings into a
+readable report grouped by severity. Include remediation advice.
+```
+
+```markdown
+# .telecoder/blueprints/data-analysis.md
+You are a data analyst. Run the analysis scripts in scripts/,
+interpret the output, and produce a summary report with key findings
+and recommended actions.
+```
+
+The agent does the agentic work. The blueprint tells it what to focus on.
+
+### 2. Guardrails — Deterministic, Non-Negotiable, Always-On
+
+Here's what Stripe learned: you don't ask the agent to run tests. You don't
+ask the agent to scan for secrets. You don't write a blueprint step for it.
+**The framework does it automatically, every time, non-negotiably.**
+
+Guardrails are **deterministic checks** that run before and after agent
+execution. They are not part of the blueprint. They are not opt-in. They are
+the framework's job.
+
+```
+     Blueprint (English)
+            │
+     ┌──────▼──────┐
+     │  PRE-GUARD   │  Context enrichment, rules injection,
+     │              │  secret scan on inputs
+     └──────┬──────┘
+            │
+     ┌──────▼──────┐
+     │    AGENT     │  The LLM agent does the work
+     │  (sandboxed) │  (Claude Code, Codex, OpenCode, etc.)
+     └──────┬──────┘
+            │
+     ┌──────▼──────┐
+     │  POST-GUARD  │  Secret scan on output, lint check,
+     │              │  test run, size limits, scope check
+     └──────┬──────┘
+            │
+        Pass? ──No──► Feed failures back to agent (bounded)
+            │
+           Yes
+            │
+     ┌──────▼──────┐
+     │   OUTPUT     │  Auto-detect: PR, text reply, comments,
+     │              │  report — whatever fits
+     └─────────────┘
+```
+
+**Built-in guardrails:**
+
+| Guardrail | When | What |
+|-----------|------|------|
+| **Context enrichment** | Pre | Inject codebase memory, scoped rules, past sessions |
+| **Secret scan** | Pre + Post | Detect API keys, tokens, passwords in inputs and outputs |
+| **Lint check** | Post | Auto-detect linter, run it, feed failures back to agent |
+| **Test run** | Post | Auto-detect test framework, run it, feed failures back |
+| **Size limit** | Post | Reject changes that touch too many files (configurable) |
+| **Scope check** | Post | Warn if agent modified files outside expected scope |
+| **Retry budget** | Post | Bounded retries (default 1-2) — don't burn tokens |
+
+**Custom guardrails** — any executable that returns pass/fail:
+
+```yaml
+# .telecoder/guardrails.yaml
+post:
+  - name: type-check
+    run: npx tsc --noEmit
+  - name: security-scan
+    run: semgrep --config=auto --error .
+  - name: no-console-log
+    run: "! grep -r 'console.log' src/"
+```
+
+**Why this split matters:**
+
+- The **blueprint** (English) is for the team — it describes what you want.
+- The **guardrails** (deterministic) are for the framework — they enforce
+  quality and security regardless of what the blueprint says.
+- An agent can ignore an English instruction. It **cannot** bypass a guardrail.
+
+This is the Stripe lesson distilled: hybrid orchestration where the agentic
+parts are flexible (English) and the deterministic parts are rigid (guardrails).
+
+### How They Work Together
+
+```
+User: "add rate limiting to /api/users"
+         │
+         ▼
+┌─ Blueprint (.telecoder/blueprint.md) ───────────────────┐
+│ "Implement the requested changes. Make sure all tests   │
+│  pass. Write a clear PR description."                   │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼ (prepended to prompt)
+┌─ Pre-Guardrails ────────────────────────────────────────┐
+│ • Gather context: related code, CLAUDE.md rules, notes  │
+│ • Secret scan inputs: clean                             │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Agent Execution (sandboxed) ───────────────────────────┐
+│ Claude Code runs with enriched prompt                    │
+│ Edits files, writes tests, etc.                         │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Post-Guardrails ───────────────────────────────────────┐
+│ • Secret scan output: clean                             │
+│ • Lint: ✓ passed                                        │
+│ • Tests: ✗ 2 failures → feed back to agent (round 1/2) │
+│ • [agent fixes] → Tests: ✓ passed                       │
+│ • Size check: 4 files changed (ok)                      │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Output ────────────────────────────────────────────────┐
+│ Files changed → commit, push, create PR #203            │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Go Escape Hatch (for framework builders)
+
+For companies building products on TeleCoder that need precise orchestration
+control, blueprints can still be Go functions:
 
 ```go
-// Blueprint defines a workflow for processing a task.
-// It receives a Run with building blocks and orchestrates them.
-// The blueprint decides the output: PR, text reply, report, comments, etc.
 type Blueprint func(ctx context.Context, run *Run) error
 ```
 
-### The Default Blueprint
+The Go path gives you full control over multi-agent orchestration, custom
+verification logic, external API calls, etc. But it's the power-user path,
+not the default.
 
 ```go
-func DefaultBlueprint(ctx context.Context, run *Run) error {
-    // 1. Gather context (deterministic)
-    //    Pull relevant code, notes, past sessions → enrich prompt
-    run.GatherContext()
-
-    // 2. Implement (agentic)
-    //    Run the coding agent with the enriched prompt
-    if err := run.Implement(); err != nil {
-        return err
-    }
-
-    // 3. Did the agent change any files?
-    if !run.HasChanges() {
-        // No code changes — the agent produced a text answer.
-        // (Question, analysis, explanation, etc.)
-        return run.Finalize()
-    }
-
-    // 4. Lint + auto-fix (deterministic)
-    run.LintFix()
-
-    // 5. Test (deterministic)
-    testResult := run.Test()
-
-    // 6. Fix failures (agentic, bounded retries)
-    for round := 0; !testResult.Passed && round < run.MaxRevisions; round++ {
-        run.Fix("Tests failed:\n" + testResult.Output)
-        run.LintFix()
-        testResult = run.Test()
-    }
-
-    // 7. Finalize — auto-detects: changed files → PR, else text reply
-    return run.Finalize()
-}
-```
-
-**`run.Finalize()` is the smart default.** It checks what happened during the
-run and produces the right output:
-- Files changed → commit, push, create PR
-- Text output only → return text reply
-- Blueprint called `run.Reply()` explicitly → use that
-
-No Blueprint type. No Node interface. No DAG executor. No YAML. **Just a
-function.** This is the NanoClaw principle: code IS configuration.
-
-### Why this matters
-
-Every other open-source coding agent is a **single loop**: prompt → agent →
-output. That works for demos. It doesn't work for production, because:
-
-- Agents skip linting. Blueprints don't.
-- Agents don't know when to stop retrying. Blueprints bound it.
-- Agents can't mix deterministic and agentic steps. Blueprints compose them.
-- Agents produce different output formats. Blueprints normalize the flow.
-- Agents always produce one kind of output. Blueprints adapt to the task.
-
-Stripe learned this the hard way and built blueprints internally. TeleCoder
-makes the pattern open source.
-
-### Custom Blueprints
-
-Blueprints aren't just for "write code, make PR." They define any async
-agent workflow:
-
-```go
-// Code review — reads a PR, produces comments (no PR output)
-func ReviewPR(ctx context.Context, run *Run) error {
-    run.GatherContext()
-
-    // Agent analyzes the diff and produces structured feedback
-    review, err := run.RunAgent("Review this PR. List issues by severity.")
-    if err != nil { return err }
-
-    // Post comments on the PR (deterministic)
-    run.CommentOnPR(run.Session.PRNumber, review)
-    return nil
-}
-
-// Security audit — scans the codebase, produces a report (no PR)
-func SecurityAudit(ctx context.Context, run *Run) error {
-    run.GatherContext()
-
-    // Run scanners (deterministic)
-    semgrep := run.Exec("semgrep", "--config=auto", "--json", ".")
-    trivy := run.Exec("trivy", "fs", "--format", "json", ".")
-
-    // Agent synthesizes findings into a readable report (agentic)
-    report, err := run.RunAgent(fmt.Sprintf(
-        "Summarize these security findings:\n\nSemgrep:\n%s\n\nTrivy:\n%s",
-        semgrep.Output, trivy.Output,
-    ))
-    if err != nil { return err }
-
-    // Return the report as text — no PR, no code changes
-    run.Reply(report)
-    return nil
-}
-
 // Multi-agent: plan with a fast model, implement with a strong one
 func PlanAndImplement(ctx context.Context, run *Run) error {
     run.GatherContext()
-
-    plan, err := run.RunAgentWith("haiku", "Create a step-by-step plan for: "+run.Prompt)
-    if err != nil { return err }
-
-    run.SetPrompt("Implement this plan:\n" + plan)
-    if err := run.Implement(); err != nil { return err }
-
-    run.LintFix()
-    run.Test()
-    return run.Finalize() // auto-detect: PR if changes, text if not
-}
-
-// CI-aware: wait for CI and fix failures
-func CIAware(ctx context.Context, run *Run) error {
-    run.GatherContext()
-    if err := run.Implement(); err != nil { return err }
-    run.LintFix()
-    run.Test()
-    run.Push()
-    pr := run.CreatePR()
-
-    ciResult := run.WaitForCI(pr, 10*time.Minute)
-    if !ciResult.Passed {
-        run.Fix("CI failed:\n" + ciResult.Logs)
-        run.LintFix()
-        run.Test()
-        run.PushAmend()
-    }
-
-    return nil
-}
-
-// Question-only: never creates a PR, always returns text
-func AnswerQuestion(ctx context.Context, run *Run) error {
-    run.GatherContext()
-    answer, err := run.RunAgent(run.Prompt)
-    if err != nil { return err }
-    run.Reply(answer)
-    return nil
+    plan, _ := run.AgentWith("haiku", "Create a detailed plan for: "+run.Prompt)
+    run.Agent("Implement this plan:\n" + plan)
+    return run.Finalize()  // guardrails still run automatically
 }
 ```
 
-### The Run Object
+Even Go blueprints get guardrails applied automatically. You can't accidentally
+skip the secret scan.
+
+### The Run Object — Layered Primitives
+
+The Run has two layers: **generic primitives** that work for any agent task,
+and **coding helpers** that build on them for software development workflows.
 
 ```go
-// Run provides building blocks that blueprints compose.
 type Run struct {
     Session      *model.Session
     Prompt       string          // the enriched prompt
     ContainerID  string          // active sandbox container
     MaxRevisions int
-
-    engine  *Engine             // access to sandbox, store, memory, git
-    agent   agent.CodingAgent   // the coding agent to use
+    engine       *Engine
 }
 
-// --- Deterministic steps ---
+// ========= Layer 1: Generic primitives (work for ANY agent task) =========
 
-func (r *Run) GatherContext()                           // enrich prompt with memory + rules
-func (r *Run) LintFix()                                 // run linter with --fix
-func (r *Run) Test() *VerifyResult                      // run test suite
-func (r *Run) Push()                                    // git commit + push
-func (r *Run) PushAmend()                               // amend + force push
-func (r *Run) Exec(cmd ...string) *ExecResult           // run arbitrary command
-func (r *Run) HasChanges() bool                         // did the agent modify files?
+// Sandbox
+func (r *Run) Exec(cmd ...string) *ExecResult           // run any command
+func (r *Run) ReadFile(path string) string               // read a file from sandbox
+func (r *Run) WriteFile(path, content string)            // write a file in sandbox
 
-// --- Agentic steps ---
+// Agent
+func (r *Run) Agent(prompt string) (string, error)       // invoke agent, return output
+func (r *Run) AgentWith(model, prompt string) (string, error)
 
-func (r *Run) Implement() error                         // run coding agent with current prompt
-func (r *Run) Fix(feedback string) error                // run agent with fix prompt
-func (r *Run) RunAgent(prompt string) (string, error)   // run agent, return text output
-func (r *Run) RunAgentWith(model, prompt string) (string, error)
+// Context
+func (r *Run) GatherContext()                            // enrich prompt with memory + rules
 
-// --- Output (the blueprint decides what the result looks like) ---
+// Output
+func (r *Run) Reply(text string)                         // return a text answer
+func (r *Run) Finalize() error                           // smart default based on what happened
+func (r *Run) Emit(eventType, data string)               // emit SSE event
 
-func (r *Run) Finalize() error                          // smart default: PR if changes, text if not
-func (r *Run) Reply(text string)                        // return a text answer
-func (r *Run) CreatePR() *PRResult                      // create a pull request
-func (r *Run) CommentOnPR(prNumber int, body string)    // post comments on existing PR
-func (r *Run) WaitForCI(pr *PRResult, timeout time.Duration) *CIResult
-
-// --- State ---
-
+// State
+func (r *Run) HasChanges() bool                          // did files change in the sandbox?
 func (r *Run) SetPrompt(prompt string)
-func (r *Run) Emit(eventType, data string)              // emit SSE event
+
+// ========= Layer 2: Coding helpers (convenience for software dev) =========
+
+func (r *Run) Verify() *VerifyResult                     // auto-detect lint + test commands, run them
+func (r *Run) LintFix()                                  // run linter with --fix
+func (r *Run) Test() *VerifyResult                       // run test suite only
+func (r *Run) Push()                                     // git commit + push
+func (r *Run) PushAmend()                                // amend + force push
+func (r *Run) CreatePR() *PRResult                       // create a pull request
+func (r *Run) CommentOnPR(prNumber int, body string)     // post comments on existing PR
+func (r *Run) WaitForCI(pr *PRResult, timeout time.Duration) *CIResult
 ```
 
-The key insight: **output is not hardcoded**. A blueprint for code tasks calls
-`Finalize()` (auto-detects PR vs text). A blueprint for code review calls
-`CommentOnPR()`. A blueprint for security audits calls `Reply()`. The
-framework doesn't assume what the agent is doing — the blueprint does.
+**Layer 1 is the framework.** It works for any async agent task: data pipelines,
+infra automation, research, analysis, anything that runs in a sandbox.
+
+**Layer 2 is the opinionated default.** It's why TeleCoder is great for coding
+agents specifically. But Layer 2 is built entirely on Layer 1 — `Verify()` is
+just `Exec()` with auto-detection, `Push()` is just `Exec("git", ...)`,
+`CreatePR()` is just a GitHub API call.
+
+A framework builder who doesn't care about PRs or linting never touches
+Layer 2. They use `Exec()`, `Agent()`, `Reply()` and build whatever workflow
+they need.
 
 ---
 
@@ -347,23 +395,24 @@ features** — it's refinement, positioning, and the blueprint pattern.
 
 ## What to Build Next
 
-### Phase 1: Blueprints (the differentiator)
+### Phase 1: Blueprints + Guardrails (the differentiator)
 
-**Goal**: Extract the current hardcoded `runSubTask()` flow into the blueprint
-pattern. Zero behavior change — just make the orchestration explicit and
-customizable.
+**Goal**: English-first blueprints with deterministic guardrails. Extract the
+current hardcoded `runSubTask()` flow into the guardrails framework. Add
+blueprint loading from `.telecoder/blueprint.md`.
 
 | Task | What | Files |
 |------|------|-------|
-| 1.1 | Define `Blueprint` type and `Run` struct | `pkg/blueprint/blueprint.go` |
-| 1.2 | Implement `DefaultBlueprint` (mirrors current flow) | `pkg/blueprint/default.go` |
-| 1.3 | Split `runVerify()` into `LintFix()` and `Test()` | `pkg/blueprint/steps.go` |
-| 1.4 | Wire blueprints into engine (`WithBlueprint()` on Builder) | `telecoder.go`, `engine.go` |
-| 1.5 | Add `WaitForCI()` step (poll GitHub Actions) | `pkg/blueprint/ci.go` |
-| 1.6 | Add scoped rules discovery in `GatherContext()` | `pkg/blueprint/rules.go` |
+| 1.1 | Define `Blueprint` type (English loader + Go func), `Run` struct | `pkg/blueprint/blueprint.go` |
+| 1.2 | Blueprint discovery: `.telecoder/blueprint.md` → prepend to prompt | `pkg/blueprint/loader.go` |
+| 1.3 | Guardrails framework: pre-guard, post-guard, retry loop | `pkg/guardrail/guardrail.go` |
+| 1.4 | Built-in guardrails: secret scan, lint, test, size limit | `pkg/guardrail/builtin.go` |
+| 1.5 | Custom guardrails from `.telecoder/guardrails.yaml` | `pkg/guardrail/custom.go` |
+| 1.6 | Wire into engine (`WithBlueprint()`, `WithGuardrails()` on Builder) | `telecoder.go`, `engine.go` |
+| 1.7 | Scoped rules discovery in pre-guard (`CLAUDE.md`, `.cursorrules`, etc.) | `pkg/guardrail/rules.go` |
 
-**Eval**: `go test ./...` passes. Default behavior identical. Custom blueprints
-work via Builder.
+**Eval**: `go test ./...` passes. Default behavior identical but now with
+guardrails enforced. English blueprints work via `.telecoder/blueprint.md`.
 
 ### Phase 2: Memory Security (trust)
 
@@ -438,17 +487,19 @@ These are valuable but not necessary for the core value proposition.
    This is the meta-insight: the framework is maximally forkable because it's
    small enough for AI to operate on.
 
-2. **Code IS configuration** — No YAML schema to learn. Blueprints are Go
-   functions. Skills (future) are markdown files. If you can read the code,
-   you understand the system.
+2. **English IS configuration** — Blueprints are markdown files anyone can
+   write. Guardrails are the framework's job, not the user's. Go functions
+   exist as an escape hatch for power users, not the default path.
 
-3. **Containers by default** — Every coding task runs in an isolated Docker
-   container. No scary permissions. No `--dangerously-skip-permissions`.
+3. **Sandboxes by default** — Every task runs in an isolated container. Docker
+   is the default runtime, but the `sandbox.Runtime` interface supports E2B,
+   Modal, Fly, Firecracker, or any container platform.
 
 ### From Stripe Minions
 
-4. **Hybrid orchestration** — Mix deterministic steps (lint, test, git) with
-   agentic steps (implement, fix). This is the blueprint pattern.
+4. **Separate agentic from deterministic** — English blueprints dispatch
+   agents. Deterministic guardrails enforce quality and security. The agent
+   can't bypass the guardrails. This is the hybrid orchestration pattern.
 
 5. **Shift feedback left** — Lint locally before pushing. Test locally before
    creating the PR. Don't waste CI cycles on obvious failures.
@@ -487,7 +538,7 @@ These are valuable but not necessary for the core value proposition.
 | Async (fire-and-forget) | Yes | No | Yes | No |
 | Blueprint orchestration | Yes | No | No | No |
 | Agent-agnostic | Yes (4 agents) | Claude only | OpenAI only | Any LLM |
-| Sandbox by default | Docker | Optional | Yes | Docker |
+| Sandbox by default | Yes (pluggable) | Optional | Yes | Docker |
 | Pre-warm pool | Yes | No | No | No |
 | Codebase memory | Yes | Yes | No | No |
 | Multi-channel (Slack, etc.) | Yes | No | No | No |
