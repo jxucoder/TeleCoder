@@ -17,7 +17,7 @@ is ~20% of the value. The other 80% is the **orchestration around it**:
 - Blueprint-based workflow (deterministic verification between agentic steps)
 - Sandbox isolation with pre-warming
 - Feedback loops (lint → fix → test → fix)
-- PR creation with proper descriptions
+- Smart output routing (PR, text reply, report, PR comments — whatever fits)
 - CI integration and bounded retries
 
 TeleCoder owns that 80%. It doesn't replace Claude Code — it makes Claude Code
@@ -33,7 +33,8 @@ production.
 5. **Extensible without complexity** — plugins, not config sprawl
 
 TeleCoder's identity: **"Run any coding agent in a sandbox with blueprint
-orchestration. Send a task, get a PR."**
+orchestration. Send a task, get a result — PR, text answer, report, whatever
+the task requires."**
 
 ---
 
@@ -51,8 +52,9 @@ orchestration. Send a task, get a PR."**
 │  │ Slack     │   │ Memory   │   │ lint+fix  │──▶ Sandbox │
 │  │ Telegram  │   │ Dispatch │   │ test      │   (Docker) │
 │  │ GitHub    │   │          │   │ fix       │            │
-│  │ Linear    │   │          │   │ push+PR   │            │
-│  │ Jira      │   │          │   │           │            │
+│  │ Linear    │   │          │   │ finalize  │──▶ Output  │
+│  │ Jira      │   │          │   │           │   (PR,text,│
+│  │           │   │          │   │           │    report) │
 │  └──────────┘   └──────────┘   └───────────┘            │
 │                                                          │
 │  ┌────────────────────────────────────────────────────┐  │
@@ -78,12 +80,15 @@ Total core: **~4500 lines of Go**. The rest is channels, tests, CLI, and web UI.
 ## Blueprints — The Core Differentiator
 
 A blueprint is a **Go function** that defines the workflow for processing a
-coding task. It mixes deterministic steps (lint, test, git) with agentic steps
-(implement, fix). This is the pattern Stripe proved works at scale.
+task. Not necessarily a "coding task" — it could be a question, audit, review,
+migration, or anything you'd ask an agent to do. Blueprints mix deterministic
+steps (lint, test, git) with agentic steps (implement, fix, analyze). This is
+the pattern Stripe proved works at scale.
 
 ```go
-// Blueprint defines a workflow for processing a coding task.
+// Blueprint defines a workflow for processing a task.
 // It receives a Run with building blocks and orchestrates them.
+// The blueprint decides the output: PR, text reply, report, comments, etc.
 type Blueprint func(ctx context.Context, run *Run) error
 ```
 
@@ -101,30 +106,36 @@ func DefaultBlueprint(ctx context.Context, run *Run) error {
         return err
     }
 
-    // 3. Lint + auto-fix (deterministic)
-    //    Run linter, apply auto-fixes, re-run to verify
+    // 3. Did the agent change any files?
+    if !run.HasChanges() {
+        // No code changes — the agent produced a text answer.
+        // (Question, analysis, explanation, etc.)
+        return run.Finalize()
+    }
+
+    // 4. Lint + auto-fix (deterministic)
     run.LintFix()
 
-    // 4. Test (deterministic)
-    //    Run the project's test suite
+    // 5. Test (deterministic)
     testResult := run.Test()
 
-    // 5. Fix failures (agentic, bounded retries)
-    //    If tests fail, ask the agent to fix — up to MaxRevisions rounds
+    // 6. Fix failures (agentic, bounded retries)
     for round := 0; !testResult.Passed && round < run.MaxRevisions; round++ {
         run.Fix("Tests failed:\n" + testResult.Output)
         run.LintFix()
         testResult = run.Test()
     }
 
-    // 6. Push + PR (deterministic)
-    //    Commit, push to branch, create PR with description
-    run.Push()
-    run.CreatePR()
-
-    return nil
+    // 7. Finalize — auto-detects: changed files → PR, else text reply
+    return run.Finalize()
 }
 ```
+
+**`run.Finalize()` is the smart default.** It checks what happened during the
+run and produces the right output:
+- Files changed → commit, push, create PR
+- Text output only → return text reply
+- Blueprint called `run.Reply()` explicitly → use that
 
 No Blueprint type. No Node interface. No DAG executor. No YAML. **Just a
 function.** This is the NanoClaw principle: code IS configuration.
@@ -138,51 +149,66 @@ output. That works for demos. It doesn't work for production, because:
 - Agents don't know when to stop retrying. Blueprints bound it.
 - Agents can't mix deterministic and agentic steps. Blueprints compose them.
 - Agents produce different output formats. Blueprints normalize the flow.
+- Agents always produce one kind of output. Blueprints adapt to the task.
 
 Stripe learned this the hard way and built blueprints internally. TeleCoder
 makes the pattern open source.
 
 ### Custom Blueprints
 
+Blueprints aren't just for "write code, make PR." They define any async
+agent workflow:
+
 ```go
-// Multi-agent blueprint: plan with a fast model, implement with a strong one
+// Code review — reads a PR, produces comments (no PR output)
+func ReviewPR(ctx context.Context, run *Run) error {
+    run.GatherContext()
+
+    // Agent analyzes the diff and produces structured feedback
+    review, err := run.RunAgent("Review this PR. List issues by severity.")
+    if err != nil { return err }
+
+    // Post comments on the PR (deterministic)
+    run.CommentOnPR(run.Session.PRNumber, review)
+    return nil
+}
+
+// Security audit — scans the codebase, produces a report (no PR)
+func SecurityAudit(ctx context.Context, run *Run) error {
+    run.GatherContext()
+
+    // Run scanners (deterministic)
+    semgrep := run.Exec("semgrep", "--config=auto", "--json", ".")
+    trivy := run.Exec("trivy", "fs", "--format", "json", ".")
+
+    // Agent synthesizes findings into a readable report (agentic)
+    report, err := run.RunAgent(fmt.Sprintf(
+        "Summarize these security findings:\n\nSemgrep:\n%s\n\nTrivy:\n%s",
+        semgrep.Output, trivy.Output,
+    ))
+    if err != nil { return err }
+
+    // Return the report as text — no PR, no code changes
+    run.Reply(report)
+    return nil
+}
+
+// Multi-agent: plan with a fast model, implement with a strong one
 func PlanAndImplement(ctx context.Context, run *Run) error {
     run.GatherContext()
 
-    // Use a fast model to create a detailed plan
     plan, err := run.RunAgentWith("haiku", "Create a step-by-step plan for: "+run.Prompt)
     if err != nil { return err }
 
-    // Use a strong model to implement the plan
     run.SetPrompt("Implement this plan:\n" + plan)
     if err := run.Implement(); err != nil { return err }
 
     run.LintFix()
     run.Test()
-    run.Push()
-    run.CreatePR()
-    return nil
+    return run.Finalize() // auto-detect: PR if changes, text if not
 }
 
-// Security-focused blueprint: scan for vulnerabilities before PR
-func SecureBuild(ctx context.Context, run *Run) error {
-    run.GatherContext()
-    if err := run.Implement(); err != nil { return err }
-    run.LintFix()
-    run.Test()
-
-    // Run security scanner (deterministic)
-    scanResult := run.Exec("semgrep", "--config=auto", ".")
-    if scanResult.ExitCode != 0 {
-        run.Fix("Security issues found:\n" + scanResult.Output)
-    }
-
-    run.Push()
-    run.CreatePR()
-    return nil
-}
-
-// CI-aware blueprint: wait for CI and fix failures
+// CI-aware: wait for CI and fix failures
 func CIAware(ctx context.Context, run *Run) error {
     run.GatherContext()
     if err := run.Implement(); err != nil { return err }
@@ -191,7 +217,6 @@ func CIAware(ctx context.Context, run *Run) error {
     run.Push()
     pr := run.CreatePR()
 
-    // Wait for CI (deterministic — polls GitHub Actions)
     ciResult := run.WaitForCI(pr, 10*time.Minute)
     if !ciResult.Passed {
         run.Fix("CI failed:\n" + ciResult.Logs)
@@ -202,6 +227,15 @@ func CIAware(ctx context.Context, run *Run) error {
 
     return nil
 }
+
+// Question-only: never creates a PR, always returns text
+func AnswerQuestion(ctx context.Context, run *Run) error {
+    run.GatherContext()
+    answer, err := run.RunAgent(run.Prompt)
+    if err != nil { return err }
+    run.Reply(answer)
+    return nil
+}
 ```
 
 ### The Run Object
@@ -209,34 +243,50 @@ func CIAware(ctx context.Context, run *Run) error {
 ```go
 // Run provides building blocks that blueprints compose.
 type Run struct {
-    Session     *model.Session
-    Prompt      string          // the enriched prompt
-    ContainerID string          // active sandbox container
+    Session      *model.Session
+    Prompt       string          // the enriched prompt
+    ContainerID  string          // active sandbox container
     MaxRevisions int
 
     engine  *Engine             // access to sandbox, store, memory, git
     agent   agent.CodingAgent   // the coding agent to use
 }
 
-// Deterministic steps
-func (r *Run) GatherContext()                           // enrich prompt with memory
+// --- Deterministic steps ---
+
+func (r *Run) GatherContext()                           // enrich prompt with memory + rules
 func (r *Run) LintFix()                                 // run linter with --fix
 func (r *Run) Test() *VerifyResult                      // run test suite
 func (r *Run) Push()                                    // git commit + push
 func (r *Run) PushAmend()                               // amend + force push
-func (r *Run) CreatePR() *PRResult                      // create GitHub PR
-func (r *Run) WaitForCI(pr *PRResult, timeout time.Duration) *CIResult
 func (r *Run) Exec(cmd ...string) *ExecResult           // run arbitrary command
+func (r *Run) HasChanges() bool                         // did the agent modify files?
 
-// Agentic steps
-func (r *Run) Implement() error                         // run coding agent
+// --- Agentic steps ---
+
+func (r *Run) Implement() error                         // run coding agent with current prompt
 func (r *Run) Fix(feedback string) error                // run agent with fix prompt
+func (r *Run) RunAgent(prompt string) (string, error)   // run agent, return text output
 func (r *Run) RunAgentWith(model, prompt string) (string, error)
 
-// State
+// --- Output (the blueprint decides what the result looks like) ---
+
+func (r *Run) Finalize() error                          // smart default: PR if changes, text if not
+func (r *Run) Reply(text string)                        // return a text answer
+func (r *Run) CreatePR() *PRResult                      // create a pull request
+func (r *Run) CommentOnPR(prNumber int, body string)    // post comments on existing PR
+func (r *Run) WaitForCI(pr *PRResult, timeout time.Duration) *CIResult
+
+// --- State ---
+
 func (r *Run) SetPrompt(prompt string)
 func (r *Run) Emit(eventType, data string)              // emit SSE event
 ```
+
+The key insight: **output is not hardcoded**. A blueprint for code tasks calls
+`Finalize()` (auto-detects PR vs text). A blueprint for code review calls
+`CommentOnPR()`. A blueprint for security audits calls `Reply()`. The
+framework doesn't assume what the agent is doing — the blueprint does.
 
 ---
 
@@ -362,9 +412,9 @@ Projects get popular by doing **one thing brilliantly**, then expanding:
 - FastAPI started as a framework, then added background tasks, WebSockets
 - Next.js started as SSR React, then added API routes, middleware
 
-TeleCoder's "one thing": **blueprint-orchestrated async coding agents in
-sandboxes**. Once that's the default, expand to conversations, heartbeat, and
-proactive monitoring.
+TeleCoder's "one thing": **blueprint-orchestrated async agents in sandboxes —
+for any task, with any outcome**. Once that's the default, expand to
+conversations, heartbeat, and proactive monitoring.
 
 ### Defer to Phase 2 (after adoption)
 
@@ -446,7 +496,8 @@ These are valuable but not necessary for the core value proposition.
 | Lines of core code | ~4500 | ~50K+ | ~10K+ | ~5K |
 
 TeleCoder's unique position: it's the **orchestration layer** that makes any
-of these agents work better.
+of these agents work better — and it doesn't force every task into a PR-shaped
+box.
 
 ---
 
