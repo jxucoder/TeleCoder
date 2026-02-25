@@ -342,38 +342,64 @@ they need.
 
 Real-world tasks often span multiple repositories. Update an API and its
 client. Change a shared schema and all its consumers. Upgrade a library
-across dependent repos. TeleCoder supports this natively.
+across dependent repos.
 
-### How it works
+### The wrong approach: pre-define repos programmatically
 
-One sandbox, multiple repos. All repos are cloned into the same container.
-The agent sees all of them. Guardrails run per-repo (each repo has its own
-lint config, test suite, rules files). Output produces one PR per changed repo.
+```json
+{
+  "repos": [
+    {"url": "github.com/acme/api-server"},
+    {"url": "github.com/acme/python-client"}
+  ]
+}
+```
+
+This is limiting. You're deciding upfront which repos the agent needs. But
+the agent might discover mid-task that it needs another repo. Or realize the
+client library is fine and only the server needs changes. Pre-defining repos
+is the same mistake as pre-defining steps — it constrains the agent to what
+you anticipated.
+
+### The right approach: give the agent git access, let it work
+
+The sandbox has git credentials. The agent can clone any repo it has access to.
+It decides at runtime what it needs. The framework **watches and reacts**.
 
 ```
 Task: "Add rate limiting to the API and update the Python client"
          │
          ▼
-┌─ Sandbox ─────────────────────────────────┐
+┌─ Sandbox (git credentials injected) ─────┐
 │                                           │
-│  /repos/api-server/     (Go, golint)      │
-│  /repos/python-client/  (Python, pytest)  │
+│  Agent decides what to do:                │
+│    $ git clone .../api-server             │
+│    $ git clone .../python-client          │
+│    (edits both)                           │
+│    (maybe clones a third repo to check    │
+│     how another service handles limits)   │
 │                                           │
-│  Agent works across both repos freely     │
 └───────────────────────────────────────────┘
          │
          ▼
-┌─ Post-Guardrails (per-repo) ──────────────┐
+┌─ Framework scans for changes ─────────────┐
+│                                           │
+│  Discovers: 2 git repos with changes      │
+│  /home/user/api-server     → 4 files      │
+│  /home/user/python-client  → 2 files      │
+│                                           │
+│  (third repo cloned but unchanged — skip) │
+└───────────────────────────────────────────┘
+         │
+         ▼
+┌─ Post-Guardrails (per-repo, automatic) ───┐
 │                                           │
 │  api-server:                              │
-│    ✓ secret scan clean                    │
-│    ✓ golint passed                        │
-│    ✓ go test ./... passed                 │
+│    ✓ secret scan · ✓ lint · ✓ tests       │
 │                                           │
 │  python-client:                           │
-│    ✓ secret scan clean                    │
-│    ✓ ruff check passed                    │
-│    ✗ pytest failed → feed back to agent   │
+│    ✓ secret scan · ✓ lint                 │
+│    ✗ pytest failed → agent fixes          │
 │    ✓ pytest passed (round 2)              │
 │                                           │
 └───────────────────────────────────────────┘
@@ -386,57 +412,33 @@ Task: "Add rate limiting to the API and update the Python client"
 └───────────────────────────────────────────┘
 ```
 
-### Configuration
+### What the framework does (not the user)
 
-Tasks specify repos in the request:
+1. **Before**: Inject git credentials into the sandbox so the agent can clone
+2. **After**: Walk the filesystem, find all git repos with uncommitted changes
+3. **Per changed repo**: Load its `.telecoder/` config, discover its lint/test
+   commands, run guardrails
+4. **Output**: Create a PR for each changed repo, cross-link them
+
+The user's task request stays simple:
 
 ```json
 {
-  "prompt": "Add rate limiting to the API and update the Python client",
-  "repos": [
-    {"url": "github.com/acme/api-server", "ref": "main"},
-    {"url": "github.com/acme/python-client", "ref": "main"}
-  ]
+  "prompt": "Add rate limiting to the API and update the Python client"
 }
 ```
 
-Or in the blueprint:
+No `repos` field. No upfront configuration. The agent figures out which repos
+it needs, the framework handles everything after.
 
-```markdown
-# .telecoder/blueprints/api-and-client.md
-You work across two repos: the Go API server and the Python client.
-When you change the API, always update the client to match.
-Run tests in both repos before submitting.
-```
+### Why this is better
 
-### Run Object additions
-
-```go
-// Multi-repo support on the Run object
-type Repo struct {
-    URL     string    // e.g. "github.com/acme/api-server"
-    Dir     string    // path inside sandbox, e.g. "/repos/api-server"
-    Ref     string    // branch to base off of
-}
-
-func (r *Run) Repos() []Repo                              // list all repos in this run
-func (r *Run) RepoByName(name string) *Repo               // lookup by short name
-func (r *Run) HasChangesIn(repo *Repo) bool                // changes in specific repo?
-func (r *Run) VerifyRepo(repo *Repo) *VerifyResult         // lint+test a specific repo
-func (r *Run) CreatePRForRepo(repo *Repo) *PRResult        // PR for a specific repo
-```
-
-`Finalize()` handles multi-repo automatically: it iterates all repos, runs
-per-repo guardrails, creates a PR for each changed repo, and cross-links the
-PRs in their descriptions. Single-repo tasks work exactly as before — `Repos()`
-returns one entry, `Finalize()` creates one PR.
-
-### Why this matters
-
-Most agent frameworks assume one repo per task. But the hardest, highest-value
-tasks are cross-repo. If you can't tell your agent "update the API and the
-client," you're limited to toy use cases. Multi-repo support is what separates
-"useful for demos" from "useful for production."
+- Agent can discover dependencies dynamically ("I need to check how service X
+  does this" → clones it, reads it, doesn't change it)
+- Agent can decide mid-task that a repo doesn't need changes
+- Agent can clone repos you didn't anticipate
+- Zero configuration for multi-repo — it just works
+- Single-repo tasks work identically (one repo detected, one PR created)
 
 ---
 
