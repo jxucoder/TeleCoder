@@ -14,11 +14,11 @@ The insight from Stripe Minions: the coding agent (Claude Code, Codex, etc.)
 is ~20% of the value. The other 80% is the **orchestration around it**:
 
 - Pre-computing relevant context (rules, code, past sessions)
-- Blueprint-based workflow (deterministic verification between agentic steps)
+- English blueprints that describe what the agent should do
+- Deterministic guardrails that enforce quality and security (non-negotiable)
 - Sandbox isolation with pre-warming
-- Feedback loops (lint → fix → test → fix)
 - Smart output routing (PR, text reply, report, PR comments — whatever fits)
-- CI integration and bounded retries
+- Multi-repo: agent clones what it needs, framework guardrails each repo
 
 TeleCoder owns that 80%. It doesn't replace Claude Code — it makes Claude Code
 (and Codex, and OpenCode, and Aider, and your custom agent) work reliably in
@@ -32,36 +32,40 @@ production.
 4. **Low floor, high ceiling** — easy to start, scales to Stripe
 5. **Extensible without complexity** — plugins, not config sprawl
 
-TeleCoder's identity: **"Run any coding agent in a sandbox with blueprint
-orchestration. Send a task, get a result — PR, text answer, report, whatever
-the task requires."**
+TeleCoder's identity: **"Send a task in English. An agent does the work in a
+sandbox. Guardrails enforce quality. You get the result — PR, text answer,
+report, whatever the task requires."**
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                       TeleCoder                           │
-│                                                          │
-│  ┌──────────┐   ┌──────────┐   ┌───────────┐            │
-│  │ Channels  │──▶│  Engine   │──▶│ Blueprint │            │
-│  │           │   │          │   │           │            │
-│  │ CLI       │   │ Sessions │   │ context   │            │
-│  │ HTTP API  │   │ Events   │   │ implement │            │
-│  │ Slack     │   │ Memory   │   │ lint+fix  │──▶ Sandbox │
-│  │ Telegram  │   │ Dispatch │   │ test      │   (Docker) │
-│  │ GitHub    │   │          │   │ fix       │            │
-│  │ Linear    │   │          │   │ finalize  │──▶ Output  │
-│  │ Jira      │   │          │   │           │   (PR,text,│
-│  │           │   │          │   │           │    report) │
-│  └──────────┘   └──────────┘   └───────────┘            │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │  Store (SQLite) · Memory (code+notes+sessions)    │  │
-│  │  Pre-warm Pool · Event Bus (SSE)                  │  │
-│  └────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                        TeleCoder                            │
+│                                                            │
+│  ┌──────────┐   ┌──────────┐   ┌────────────────────────┐ │
+│  │ Channels  │──▶│  Engine   │──▶│ Blueprint   Guardrails │ │
+│  │           │   │          │   │ (English)  (deterministic)│
+│  │ CLI       │   │ Sessions │   │                        │ │
+│  │ HTTP API  │   │ Events   │   │  ┌─────┐   ┌────────┐ │ │
+│  │ Slack     │   │ Memory   │   │  │Agent│──▶│Lint,Test│ │ │
+│  │ Telegram  │   │ Dispatch │   │  │works│   │Secrets │ │ │
+│  │ GitHub    │   │          │   │  │ in  │◀──│Size,CI │ │ │
+│  │ Linear    │   │          │   │  │Sand-│   │(per    │ │ │
+│  │ Jira      │   │          │   │  │ box │   │ repo)  │ │ │
+│  │           │   │          │   │  └─────┘   └───┬────┘ │ │
+│  └──────────┘   └──────────┘   │             ┌───▼────┐ │ │
+│                                │             │ Output │ │ │
+│                                │             │PR,text,│ │ │
+│                                │             │report  │ │ │
+│                                │             └────────┘ │ │
+│                                └────────────────────────┘ │
+│  ┌──────────────────────────────────────────────────────┐ │
+│  │  Store (SQLite) · Memory (code+notes+sessions)      │ │
+│  │  Pre-warm Pool · Event Bus (SSE)                    │ │
+│  └──────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────┘
 ```
 
 Four layers, each independently useful:
@@ -450,10 +454,10 @@ Every codebase has conventions documented in `.cursorrules`, `CLAUDE.md`,
 and injects these.
 
 ```go
-// During GatherContext(), the blueprint:
-// 1. Searches for rules files in the repo
+// During the pre-guardrail phase, the framework:
+// 1. Searches for rules files in each repo
 // 2. Finds the most relevant rules for the current task
-// 3. Prepends them to the prompt
+// 3. Prepends them to the agent's prompt (alongside the blueprint)
 
 // Auto-discovered files (checked in order):
 var rulesFiles = []string{
@@ -565,9 +569,9 @@ Projects get popular by doing **one thing brilliantly**, then expanding:
 - FastAPI started as a framework, then added background tasks, WebSockets
 - Next.js started as SSR React, then added API routes, middleware
 
-TeleCoder's "one thing": **blueprint-orchestrated async agents in sandboxes —
-for any task, with any outcome**. Once that's the default, expand to
-conversations, heartbeat, and proactive monitoring.
+TeleCoder's "one thing": **send a task in English, agent works freely in a
+sandbox, guardrails enforce quality, you get the result**. Once that's the
+default, expand to conversations, heartbeat, and proactive monitoring.
 
 ### Defer to Phase 2 (after adoption)
 
@@ -640,7 +644,7 @@ These are valuable but not necessary for the core value proposition.
 | Feature | TeleCoder | Claude Code | Codex CLI | SWE-agent |
 |---------|-----------|-------------|-----------|-----------|
 | Async (fire-and-forget) | Yes | No | Yes | No |
-| Blueprint orchestration | Yes | No | No | No |
+| English blueprints + guardrails | Yes | No | No | No |
 | Agent-agnostic | Yes (4 agents) | Claude only | OpenAI only | Any LLM |
 | Sandbox by default | Yes (pluggable) | Optional | Yes | Docker |
 | Multi-repo tasks | Yes | No | No | No |
@@ -667,8 +671,9 @@ TeleCoder is maximally popular when:
 2. **Companies fork it** as the foundation for their internal coding agent
    infra (like Stripe did with their own system).
 
-3. **The blueprint pattern becomes a standard** — other tools adopt the same
-   concept of hybrid deterministic + agentic orchestration.
+3. **The English blueprint + guardrails pattern becomes a standard** — other
+   tools adopt the same concept of English-described workflows with
+   deterministic quality enforcement.
 
 4. **Contributors add agents, channels, and blueprints** without touching the
    core engine — the extension points are that clean.
