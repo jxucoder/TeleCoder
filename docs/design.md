@@ -338,6 +338,108 @@ they need.
 
 ---
 
+## Multi-Repo Tasks
+
+Real-world tasks often span multiple repositories. Update an API and its
+client. Change a shared schema and all its consumers. Upgrade a library
+across dependent repos. TeleCoder supports this natively.
+
+### How it works
+
+One sandbox, multiple repos. All repos are cloned into the same container.
+The agent sees all of them. Guardrails run per-repo (each repo has its own
+lint config, test suite, rules files). Output produces one PR per changed repo.
+
+```
+Task: "Add rate limiting to the API and update the Python client"
+         │
+         ▼
+┌─ Sandbox ─────────────────────────────────┐
+│                                           │
+│  /repos/api-server/     (Go, golint)      │
+│  /repos/python-client/  (Python, pytest)  │
+│                                           │
+│  Agent works across both repos freely     │
+└───────────────────────────────────────────┘
+         │
+         ▼
+┌─ Post-Guardrails (per-repo) ──────────────┐
+│                                           │
+│  api-server:                              │
+│    ✓ secret scan clean                    │
+│    ✓ golint passed                        │
+│    ✓ go test ./... passed                 │
+│                                           │
+│  python-client:                           │
+│    ✓ secret scan clean                    │
+│    ✓ ruff check passed                    │
+│    ✗ pytest failed → feed back to agent   │
+│    ✓ pytest passed (round 2)              │
+│                                           │
+└───────────────────────────────────────────┘
+         │
+         ▼
+┌─ Output ──────────────────────────────────┐
+│  PR #204 on api-server                    │
+│  PR #87 on python-client                  │
+│  (cross-linked in descriptions)           │
+└───────────────────────────────────────────┘
+```
+
+### Configuration
+
+Tasks specify repos in the request:
+
+```json
+{
+  "prompt": "Add rate limiting to the API and update the Python client",
+  "repos": [
+    {"url": "github.com/acme/api-server", "ref": "main"},
+    {"url": "github.com/acme/python-client", "ref": "main"}
+  ]
+}
+```
+
+Or in the blueprint:
+
+```markdown
+# .telecoder/blueprints/api-and-client.md
+You work across two repos: the Go API server and the Python client.
+When you change the API, always update the client to match.
+Run tests in both repos before submitting.
+```
+
+### Run Object additions
+
+```go
+// Multi-repo support on the Run object
+type Repo struct {
+    URL     string    // e.g. "github.com/acme/api-server"
+    Dir     string    // path inside sandbox, e.g. "/repos/api-server"
+    Ref     string    // branch to base off of
+}
+
+func (r *Run) Repos() []Repo                              // list all repos in this run
+func (r *Run) RepoByName(name string) *Repo               // lookup by short name
+func (r *Run) HasChangesIn(repo *Repo) bool                // changes in specific repo?
+func (r *Run) VerifyRepo(repo *Repo) *VerifyResult         // lint+test a specific repo
+func (r *Run) CreatePRForRepo(repo *Repo) *PRResult        // PR for a specific repo
+```
+
+`Finalize()` handles multi-repo automatically: it iterates all repos, runs
+per-repo guardrails, creates a PR for each changed repo, and cross-links the
+PRs in their descriptions. Single-repo tasks work exactly as before — `Repos()`
+returns one entry, `Finalize()` creates one PR.
+
+### Why this matters
+
+Most agent frameworks assume one repo per task. But the hardest, highest-value
+tasks are cross-repo. If you can't tell your agent "update the API and the
+client," you're limited to toy use cases. Multi-repo support is what separates
+"useful for demos" from "useful for production."
+
+---
+
 ## Scoped Rules (Stripe Pattern)
 
 Stripe discovered that **what's good for human developers is good for agents**.
@@ -539,6 +641,7 @@ These are valuable but not necessary for the core value proposition.
 | Blueprint orchestration | Yes | No | No | No |
 | Agent-agnostic | Yes (4 agents) | Claude only | OpenAI only | Any LLM |
 | Sandbox by default | Yes (pluggable) | Optional | Yes | Docker |
+| Multi-repo tasks | Yes | No | No | No |
 | Pre-warm pool | Yes | No | No | No |
 | Codebase memory | Yes | Yes | No | No |
 | Multi-channel (Slack, etc.) | Yes | No | No | No |
