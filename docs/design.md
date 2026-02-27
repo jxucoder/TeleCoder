@@ -40,42 +40,26 @@ report, whatever the task requires."**
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────────────────────┐
-│                        TeleCoder                            │
-│                                                            │
-│  ┌──────────┐   ┌──────────┐   ┌────────────────────────┐ │
-│  │ Channels  │──▶│  Engine   │──▶│ Blueprint   Guardrails │ │
-│  │           │   │          │   │ (English)  (deterministic)│
-│  │ CLI       │   │ Sessions │   │                        │ │
-│  │ HTTP API  │   │ Events   │   │  ┌─────┐   ┌────────┐ │ │
-│  │ Slack     │   │ Memory   │   │  │Agent│──▶│Lint,Test│ │ │
-│  │ Telegram  │   │ Dispatch │   │  │works│   │Secrets │ │ │
-│  │ GitHub    │   │          │   │  │ in  │◀──│Size,CI │ │ │
-│  │ Linear    │   │          │   │  │Sand-│   │(per    │ │ │
-│  │ Jira      │   │          │   │  │ box │   │ repo)  │ │ │
-│  │           │   │          │   │  └─────┘   └───┬────┘ │ │
-│  └──────────┘   └──────────┘   │             ┌───▼────┐ │ │
-│                                │             │ Output │ │ │
-│                                │             │PR,text,│ │ │
-│                                │             │report  │ │ │
-│                                │             └────────┘ │ │
-│                                └────────────────────────┘ │
-│  ┌──────────────────────────────────────────────────────┐ │
-│  │  Store (SQLite) · Memory (code+notes+sessions)      │ │
-│  │  Pre-warm Pool · Event Bus (SSE)                    │ │
-│  └──────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────┘
-```
+Four components, each independently useful:
 
-Four layers, each independently useful:
+**Channels** receive tasks from the outside world — CLI, HTTP API, Slack,
+Telegram, GitHub, Linear, Jira. Each channel is a thin adapter that normalizes
+incoming messages into a task.
 
-| Layer | What | Lines | You need it when... |
-|-------|------|-------|---------------------|
-| **Sandbox** | Container lifecycle, pre-warm pool (Docker default; E2B, Modal, Fly pluggable) | ~500 | You want isolated execution |
-| **Engine** | Session management, events, memory, dispatch | ~1500 | You want to orchestrate agents |
-| **Blueprint + Guardrails** | English workflow descriptions + deterministic quality/security checks | ~500 | You want reliable multi-step flows |
-| **Channels** | Slack, Telegram, GitHub, CLI, HTTP API | ~200 each | You want integrations |
+**Engine** manages sessions, events, memory, and dispatch. It decides which
+agent handles the task, tracks state, and coordinates the lifecycle.
+
+**Blueprints and Guardrails** define what the agent should do (English) and
+what the framework enforces (deterministic checks). The blueprint instructs;
+the guardrails constrain.
+
+**Sandbox** provides isolated execution — Docker by default, with pluggable
+support for E2B, Modal, Fly, or any container platform. A pre-warm pool keeps
+startup fast.
+
+Underneath everything sits a SQLite store for persistence, a codebase memory
+system (code index + notes + past sessions), and an event bus for real-time
+streaming via SSE.
 
 Total core: **~4500 lines of Go**. The rest is channels, tests, CLI, and web UI.
 
@@ -88,20 +72,12 @@ Total core: **~4500 lines of Go**. The rest is channels, tests, CLI, and web UI.
 A blueprint is a **natural language description** of what the agent should do.
 Not Go. Not YAML. Not shell scripts. **English.**
 
-```markdown
-# .telecoder/blueprint.md
-
-You are a coding agent working on this repository.
-
-When given a task:
-1. Understand the codebase context and coding conventions
-2. Implement the requested changes
-3. Make sure all tests pass
-4. If tests fail, fix your changes (up to 2 attempts)
-5. Write a clear PR description explaining what changed and why
-
-If the task is a question (not a code change), just answer it directly.
-```
+A typical blueprint lives at **.telecoder/blueprint.md** in the repo and reads
+like this: "You are a coding agent working on this repository. When given a
+task, understand the codebase context and coding conventions, implement the
+requested changes, make sure all tests pass, fix failures if needed (up to 2
+attempts), and write a clear PR description explaining what changed and why.
+If the task is a question, just answer it directly."
 
 That's it. Drop this file in your repo and TeleCoder uses it to instruct the
 agent. Anyone can write a blueprint. Anyone can customize the workflow. No
@@ -116,29 +92,15 @@ are powerful coding agents, they know how to plan and execute.
 A PM can write a blueprint. A security team can write a blueprint. An intern
 can write a blueprint. English blueprints scale to any team, any skill level.
 
-**Different blueprints for different tasks:**
+**Different blueprints for different tasks.** You can have separate blueprints
+for different workflows:
 
-```markdown
-# .telecoder/blueprints/review.md
-You are a code reviewer. Analyze the PR diff carefully.
-List issues by severity (critical, warning, nit).
-Focus on: correctness, security, performance, readability.
-Never suggest style changes that contradict the project's linter config.
-```
-
-```markdown
-# .telecoder/blueprints/security-audit.md
-You are a security auditor. Scan the codebase for vulnerabilities.
-Run semgrep and trivy if available. Synthesize findings into a
-readable report grouped by severity. Include remediation advice.
-```
-
-```markdown
-# .telecoder/blueprints/data-analysis.md
-You are a data analyst. Run the analysis scripts in scripts/,
-interpret the output, and produce a summary report with key findings
-and recommended actions.
-```
+- **review.md** — instructs the agent to act as a code reviewer, analyze PR
+  diffs, list issues by severity, and respect the project's linter config
+- **security-audit.md** — instructs the agent to scan for vulnerabilities,
+  run security tools if available, and produce a severity-grouped report
+- **data-analysis.md** — instructs the agent to run analysis scripts and
+  produce a summary with key findings and recommended actions
 
 The agent does the agentic work. The blueprint tells it what to focus on.
 
@@ -152,33 +114,12 @@ Guardrails are **deterministic checks** that run before and after agent
 execution. They are not part of the blueprint. They are not opt-in. They are
 the framework's job.
 
-```
-     Blueprint (English)
-            │
-     ┌──────▼──────┐
-     │  PRE-GUARD   │  Context enrichment, rules injection,
-     │              │  secret scan on inputs
-     └──────┬──────┘
-            │
-     ┌──────▼──────┐
-     │    AGENT     │  The LLM agent does the work
-     │  (sandboxed) │  (Claude Code, Codex, OpenCode, etc.)
-     └──────┬──────┘
-            │
-     ┌──────▼──────┐
-     │  POST-GUARD  │  Secret scan on output, lint check,
-     │              │  test run, size limits, scope check
-     └──────┬──────┘
-            │
-        Pass? ──No──► Feed failures back to agent (bounded)
-            │
-           Yes
-            │
-     ┌──────▼──────┐
-     │   OUTPUT     │  Auto-detect: PR, text reply, comments,
-     │              │  report — whatever fits
-     └─────────────┘
-```
+The flow is: **Blueprint** feeds into **Pre-Guardrails** (context enrichment,
+rules injection, secret scan on inputs), then the **Agent** works in a sandbox,
+then **Post-Guardrails** run (secret scan on output, lint, tests, size limits,
+scope check). If post-guardrails fail, failures are fed back to the agent for
+a bounded number of retries. Once everything passes, the **Output** is
+delivered — PR, text reply, comments, report — whatever fits.
 
 **Built-in guardrails:**
 
@@ -192,18 +133,11 @@ the framework's job.
 | **Scope check** | Post | Warn if agent modified files outside expected scope |
 | **Retry budget** | Post | Bounded retries (default 1-2) — don't burn tokens |
 
-**Custom guardrails** — any executable that returns pass/fail:
-
-```yaml
-# .telecoder/guardrails.yaml
-post:
-  - name: type-check
-    run: npx tsc --noEmit
-  - name: security-scan
-    run: semgrep --config=auto --error .
-  - name: no-console-log
-    run: "! grep -r 'console.log' src/"
-```
+**Custom guardrails** are any executable that returns pass/fail, defined in
+**.telecoder/guardrails.yaml**. Examples: run the TypeScript compiler with
+no-emit to type-check, run semgrep for security scanning, or grep for banned
+patterns like console.log in production code. Each custom guardrail has a name
+and a shell command — nothing more.
 
 **Why this split matters:**
 
@@ -217,127 +151,50 @@ parts are flexible (English) and the deterministic parts are rigid (guardrails).
 
 ### How They Work Together
 
-```
-User: "add rate limiting to /api/users"
-         │
-         ▼
-┌─ Blueprint (.telecoder/blueprint.md) ───────────────────┐
-│ "Implement the requested changes. Make sure all tests   │
-│  pass. Write a clear PR description."                   │
-└─────────────────────────────────────────────────────────┘
-         │
-         ▼ (prepended to prompt)
-┌─ Pre-Guardrails ────────────────────────────────────────┐
-│ • Gather context: related code, CLAUDE.md rules, notes  │
-│ • Secret scan inputs: clean                             │
-└─────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─ Agent Execution (sandboxed) ───────────────────────────┐
-│ Claude Code runs with enriched prompt                    │
-│ Edits files, writes tests, etc.                         │
-└─────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─ Post-Guardrails ───────────────────────────────────────┐
-│ • Secret scan output: clean                             │
-│ • Lint: ✓ passed                                        │
-│ • Tests: ✗ 2 failures → feed back to agent (round 1/2) │
-│ • [agent fixes] → Tests: ✓ passed                       │
-│ • Size check: 4 files changed (ok)                      │
-└─────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─ Output ────────────────────────────────────────────────┐
-│ Files changed → commit, push, create PR #203            │
-└─────────────────────────────────────────────────────────┘
-```
+Consider the task "add rate limiting to /api/users":
 
-### Go Escape Hatch (for framework builders)
+1. The **blueprint** is loaded — it says to implement changes, ensure tests
+   pass, and write a clear PR description.
+2. **Pre-guardrails** run — gather related code context, load CLAUDE.md rules
+   and notes, secret-scan the inputs. Everything is clean. This context is
+   prepended to the agent's prompt.
+3. The **agent** executes in a sandbox with the enriched prompt. Claude Code
+   edits files, writes tests, does its thing.
+4. **Post-guardrails** run — secret scan the output (clean), run the linter
+   (passes), run the tests (2 failures detected). Failures are fed back to
+   the agent. The agent fixes the issues. Tests pass on round 2. Size check:
+   4 files changed, within limits.
+5. **Output** — files changed, so the framework commits, pushes, and creates
+   a pull request.
+
+### Programmatic Escape Hatch
 
 For companies building products on TeleCoder that need precise orchestration
-control, blueprints can still be Go functions:
+control, blueprints can also be Go functions. This gives full control over
+multi-agent orchestration, custom verification logic, and external API calls.
+But it's the power-user path, not the default.
 
-```go
-type Blueprint func(ctx context.Context, run *Run) error
-```
-
-The Go path gives you full control over multi-agent orchestration, custom
-verification logic, external API calls, etc. But it's the power-user path,
-not the default.
-
-```go
-// Multi-agent: plan with a fast model, implement with a strong one
-func PlanAndImplement(ctx context.Context, run *Run) error {
-    run.GatherContext()
-    plan, _ := run.AgentWith("haiku", "Create a detailed plan for: "+run.Prompt)
-    run.Agent("Implement this plan:\n" + plan)
-    return run.Finalize()  // guardrails still run automatically
-}
-```
-
-Even Go blueprints get guardrails applied automatically. You can't accidentally
-skip the secret scan.
+Even programmatic blueprints get guardrails applied automatically. You can't
+accidentally skip the secret scan.
 
 ### The Run Object — Layered Primitives
 
-The Run has two layers: **generic primitives** that work for any agent task,
-and **coding helpers** that build on them for software development workflows.
+The Run has two layers of capabilities:
 
-```go
-type Run struct {
-    Session      *model.Session
-    Prompt       string          // the enriched prompt
-    ContainerID  string          // active sandbox container
-    MaxRevisions int
-    engine       *Engine
-}
+**Generic primitives** work for any agent task — sandbox operations (execute
+commands, read files, write files), agent invocation (send a prompt, get a
+response, optionally with a specific model), context gathering (enrich the
+prompt with memory and rules), output (reply with text, finalize with smart
+defaults, emit SSE events), and state queries (check if files changed).
 
-// ========= Layer 1: Generic primitives (work for ANY agent task) =========
+**Coding helpers** are convenience methods built entirely on the generic
+primitives — verify (auto-detect and run lint + test commands), lint fix, test
+only, git push, amend push, create PR, comment on PR, wait for CI. These are
+why TeleCoder is great for coding agents specifically, but they're just
+wrappers around the generic layer.
 
-// Sandbox
-func (r *Run) Exec(cmd ...string) *ExecResult           // run any command
-func (r *Run) ReadFile(path string) string               // read a file from sandbox
-func (r *Run) WriteFile(path, content string)            // write a file in sandbox
-
-// Agent
-func (r *Run) Agent(prompt string) (string, error)       // invoke agent, return output
-func (r *Run) AgentWith(model, prompt string) (string, error)
-
-// Context
-func (r *Run) GatherContext()                            // enrich prompt with memory + rules
-
-// Output
-func (r *Run) Reply(text string)                         // return a text answer
-func (r *Run) Finalize() error                           // smart default based on what happened
-func (r *Run) Emit(eventType, data string)               // emit SSE event
-
-// State
-func (r *Run) HasChanges() bool                          // did files change in the sandbox?
-func (r *Run) SetPrompt(prompt string)
-
-// ========= Layer 2: Coding helpers (convenience for software dev) =========
-
-func (r *Run) Verify() *VerifyResult                     // auto-detect lint + test commands, run them
-func (r *Run) LintFix()                                  // run linter with --fix
-func (r *Run) Test() *VerifyResult                       // run test suite only
-func (r *Run) Push()                                     // git commit + push
-func (r *Run) PushAmend()                                // amend + force push
-func (r *Run) CreatePR() *PRResult                       // create a pull request
-func (r *Run) CommentOnPR(prNumber int, body string)     // post comments on existing PR
-func (r *Run) WaitForCI(pr *PRResult, timeout time.Duration) *CIResult
-```
-
-**Layer 1 is the framework.** It works for any async agent task: data pipelines,
-infra automation, research, analysis, anything that runs in a sandbox.
-
-**Layer 2 is the opinionated default.** It's why TeleCoder is great for coding
-agents specifically. But Layer 2 is built entirely on Layer 1 — `Verify()` is
-just `Exec()` with auto-detection, `Push()` is just `Exec("git", ...)`,
-`CreatePR()` is just a GitHub API call.
-
-A framework builder who doesn't care about PRs or linting never touches
-Layer 2. They use `Exec()`, `Agent()`, `Reply()` and build whatever workflow
+A framework builder who doesn't care about PRs or linting never touches the
+coding helpers. They use the generic primitives and build whatever workflow
 they need.
 
 ---
@@ -348,97 +205,45 @@ Real-world tasks often span multiple repositories. Update an API and its
 client. Change a shared schema and all its consumers. Upgrade a library
 across dependent repos.
 
-### The wrong approach: pre-define repos programmatically
+### The wrong approach: pre-define repos upfront
 
-```json
-{
-  "repos": [
-    {"url": "github.com/acme/api-server"},
-    {"url": "github.com/acme/python-client"}
-  ]
-}
-```
-
-This is limiting. You're deciding upfront which repos the agent needs. But
-the agent might discover mid-task that it needs another repo. Or realize the
-client library is fine and only the server needs changes. Pre-defining repos
-is the same mistake as pre-defining steps — it constrains the agent to what
-you anticipated.
+Listing repos in the task request is limiting. You're deciding upfront which
+repos the agent needs. But the agent might discover mid-task that it needs
+another repo. Or realize the client library is fine and only the server needs
+changes. Pre-defining repos is the same mistake as pre-defining steps — it
+constrains the agent to what you anticipated.
 
 ### The right approach: give the agent git access, let it work
 
 The sandbox has git credentials. The agent can clone any repo it has access to.
 It decides at runtime what it needs. The framework **watches and reacts**.
 
-```
-Task: "Add rate limiting to the API and update the Python client"
-         │
-         ▼
-┌─ Sandbox (git credentials injected) ─────┐
-│                                           │
-│  Agent decides what to do:                │
-│    $ git clone .../api-server             │
-│    $ git clone .../python-client          │
-│    (edits both)                           │
-│    (maybe clones a third repo to check    │
-│     how another service handles limits)   │
-│                                           │
-└───────────────────────────────────────────┘
-         │
-         ▼
-┌─ Framework scans for changes ─────────────┐
-│                                           │
-│  Discovers: 2 git repos with changes      │
-│  /home/user/api-server     → 4 files      │
-│  /home/user/python-client  → 2 files      │
-│                                           │
-│  (third repo cloned but unchanged — skip) │
-└───────────────────────────────────────────┘
-         │
-         ▼
-┌─ Post-Guardrails (per-repo, automatic) ───┐
-│                                           │
-│  api-server:                              │
-│    ✓ secret scan · ✓ lint · ✓ tests       │
-│                                           │
-│  python-client:                           │
-│    ✓ secret scan · ✓ lint                 │
-│    ✗ pytest failed → agent fixes          │
-│    ✓ pytest passed (round 2)              │
-│                                           │
-└───────────────────────────────────────────┘
-         │
-         ▼
-┌─ Output ──────────────────────────────────┐
-│  PR #204 on api-server                    │
-│  PR #87 on python-client                  │
-│  (cross-linked in descriptions)           │
-└───────────────────────────────────────────┘
-```
+For a task like "add rate limiting to the API and update the Python client":
+
+1. The agent clones the API server repo and the Python client repo
+2. It edits both (and maybe clones a third repo just to read how another
+   service handles rate limiting)
+3. The framework scans the sandbox afterward — discovers 2 repos with changes,
+   notes the third was cloned but unchanged (skip it)
+4. Post-guardrails run **per repo** — each repo gets its own secret scan, lint,
+   and test run, using that repo's own configuration
+5. Output: one PR per changed repo, cross-linked in their descriptions
 
 ### What the framework does (not the user)
 
 1. **Before**: Inject git credentials into the sandbox so the agent can clone
 2. **After**: Walk the filesystem, find all git repos with uncommitted changes
-3. **Per changed repo**: Load its `.telecoder/` config, discover its lint/test
+3. **Per changed repo**: Load its .telecoder/ config, discover its lint/test
    commands, run guardrails
 4. **Output**: Create a PR for each changed repo, cross-link them
 
-The user's task request stays simple:
-
-```json
-{
-  "prompt": "Add rate limiting to the API and update the Python client"
-}
-```
-
-No `repos` field. No upfront configuration. The agent figures out which repos
-it needs, the framework handles everything after.
+The user's task request is just a prompt — "Add rate limiting to the API and
+update the Python client." No repos field. No upfront configuration. The agent
+figures out which repos it needs, the framework handles everything after.
 
 ### Why this is better
 
-- Agent can discover dependencies dynamically ("I need to check how service X
-  does this" → clones it, reads it, doesn't change it)
+- Agent can discover dependencies dynamically (clone a repo to read it, not change it)
 - Agent can decide mid-task that a repo doesn't need changes
 - Agent can clone repos you didn't anticipate
 - Zero configuration for multi-repo — it just works
@@ -449,26 +254,15 @@ it needs, the framework handles everything after.
 ## Scoped Rules (Stripe Pattern)
 
 Stripe discovered that **what's good for human developers is good for agents**.
-Every codebase has conventions documented in `.cursorrules`, `CLAUDE.md`,
-`AGENTS.md`, `.github/copilot-instructions.md`, etc. TeleCoder auto-discovers
+Every codebase has conventions documented in .cursorrules, CLAUDE.md, AGENTS.md,
+.github/copilot-instructions.md, and similar files. TeleCoder auto-discovers
 and injects these.
 
-```go
-// During the pre-guardrail phase, the framework:
-// 1. Searches for rules files in each repo
-// 2. Finds the most relevant rules for the current task
-// 3. Prepends them to the agent's prompt (alongside the blueprint)
-
-// Auto-discovered files (checked in order):
-var rulesFiles = []string{
-    "CLAUDE.md",
-    "AGENTS.md",
-    ".cursorrules",
-    ".github/copilot-instructions.md",
-    ".telecoder/rules.md",
-    ".telecoder/rules/*.md",
-}
-```
+During the pre-guardrail phase, the framework searches each repo for rules
+files — CLAUDE.md, AGENTS.md, .cursorrules, .github/copilot-instructions.md,
+.telecoder/rules.md, and any files under .telecoder/rules/. It finds the most
+relevant rules for the current task and prepends them to the agent's prompt
+alongside the blueprint.
 
 This is zero-config for repos that already have agent rules — which is most
 active repos in 2026.
@@ -506,61 +300,53 @@ features** — it's refinement, positioning, and the blueprint pattern.
 ### Phase 1: Blueprints + Guardrails (the differentiator)
 
 **Goal**: English-first blueprints with deterministic guardrails. Extract the
-current hardcoded `runSubTask()` flow into the guardrails framework. Add
-blueprint loading from `.telecoder/blueprint.md`.
+current hardcoded task flow into the guardrails framework. Add blueprint
+loading from .telecoder/blueprint.md.
 
-| Task | What | Files |
-|------|------|-------|
-| 1.1 | Define `Blueprint` type (English loader + Go func), `Run` struct | `pkg/blueprint/blueprint.go` |
-| 1.2 | Blueprint discovery: `.telecoder/blueprint.md` → prepend to prompt | `pkg/blueprint/loader.go` |
-| 1.3 | Guardrails framework: pre-guard, post-guard, retry loop | `pkg/guardrail/guardrail.go` |
-| 1.4 | Built-in guardrails: secret scan, lint, test, size limit | `pkg/guardrail/builtin.go` |
-| 1.5 | Custom guardrails from `.telecoder/guardrails.yaml` | `pkg/guardrail/custom.go` |
-| 1.6 | Wire into engine (`WithBlueprint()`, `WithGuardrails()` on Builder) | `telecoder.go`, `engine.go` |
-| 1.7 | Scoped rules discovery in pre-guard (`CLAUDE.md`, `.cursorrules`, etc.) | `pkg/guardrail/rules.go` |
+1. Define the Blueprint type — English loader plus Go function escape hatch — and the Run struct
+2. Blueprint discovery — load .telecoder/blueprint.md and prepend to prompt
+3. Guardrails framework — pre-guard, post-guard, retry loop
+4. Built-in guardrails — secret scan, lint, test, size limit
+5. Custom guardrails from .telecoder/guardrails.yaml
+6. Wire into engine via the Builder pattern
+7. Scoped rules discovery in pre-guard (CLAUDE.md, .cursorrules, etc.)
 
-**Eval**: `go test ./...` passes. Default behavior identical but now with
-guardrails enforced. English blueprints work via `.telecoder/blueprint.md`.
+**Eval**: All tests pass. Default behavior identical but now with guardrails
+enforced. English blueprints work via .telecoder/blueprint.md.
 
 ### Phase 2: Memory Security (trust)
 
 Companies won't use a framework that leaks secrets into agent prompts.
 
-| Task | What | Files |
-|------|------|-------|
-| 2.1 | Secret scanner (regex: AWS, GH tokens, JWT, keys) | `pkg/memory/security.go` |
-| 2.2 | Integrate scanner into `insertChunk()` | `pkg/memory/codebase.go` |
-| 2.3 | Skip sensitive files in `IsIndexable()` | `pkg/memory/chunker.go` |
-| 2.4 | Content sanitization in `enrichPrompt()` | `pkg/memory/sanitize.go` |
-| 2.5 | Audit events on memory operations | `pkg/memory/audit.go` |
+1. Secret scanner — regex patterns for AWS keys, GitHub tokens, JWTs, etc.
+2. Integrate scanner into the chunk insertion pipeline
+3. Skip sensitive files (.env, .pem, etc.) during indexing
+4. Content sanitization when enriching prompts
+5. Audit events on memory operations
 
-**Eval**: No `.env` or `*.pem` files indexed. No API keys in retrieved chunks.
+**Eval**: No .env or .pem files indexed. No API keys in retrieved chunks.
 
 ### Phase 3: Developer Experience (adoption)
 
-| Task | What |
-|------|------|
-| 3.1 | `docker compose up` quickstart (one command, works) |
-| 3.2 | "Build your first async agent in 5 minutes" tutorial |
-| 3.3 | Example blueprints gallery (security, CI-aware, multi-agent) |
-| 3.4 | README rewrite focused on the blueprint story |
-| 3.5 | GitHub Actions template for "TeleCoder as CI bot" |
+1. One-command quickstart via docker compose
+2. "Build your first async agent in 5 minutes" tutorial
+3. Example blueprints gallery (security, CI-aware, multi-agent)
+4. README rewrite focused on the blueprint story
+5. GitHub Actions template for "TeleCoder as CI bot"
 
 ### Phase 4: Ecosystem (network effects)
 
-| Task | What |
-|------|------|
-| 4.1 | MCP server — expose memory as MCP tools |
-| 4.2 | MCP client — consume external tools as memory providers |
-| 4.3 | Ollama embedder — zero-API-key local memory |
-| 4.4 | Webhook-driven reindexing (reindex on git push) |
-| 4.5 | Provider interfaces for memory (Qdrant, Mem0, etc.) |
+1. MCP server — expose memory as MCP tools
+2. MCP client — consume external tools as memory providers
+3. Ollama embedder — zero-API-key local memory
+4. Webhook-driven reindexing (reindex on git push)
+5. Provider interfaces for memory (Qdrant, Mem0, etc.)
 
 ---
 
 ## What NOT to Build (Yet)
 
-The v3 design.md proposed a full conversational agent (Agent Loop, Heartbeat,
+The v3 design proposed a full conversational agent (Agent Loop, Heartbeat,
 Skills, Gateway). That's the right long-term vision, but it's **too much
 surface area for adoption**.
 
@@ -600,8 +386,8 @@ These are valuable but not necessary for the core value proposition.
    exist as an escape hatch for power users, not the default path.
 
 3. **Sandboxes by default** — Every task runs in an isolated container. Docker
-   is the default runtime, but the `sandbox.Runtime` interface supports E2B,
-   Modal, Fly, Firecracker, or any container platform.
+   is the default runtime, but the sandbox interface supports E2B, Modal, Fly,
+   Firecracker, or any container platform.
 
 ### From Stripe Minions
 
@@ -612,19 +398,20 @@ These are valuable but not necessary for the core value proposition.
 5. **Shift feedback left** — Lint locally before pushing. Test locally before
    creating the PR. Don't waste CI cycles on obvious failures.
 
-6. **Bounded retries** — MaxRevisions = 1-2. More retries don't help — they
-   waste tokens. Fix the prompt or the blueprint instead.
+6. **Bounded retries** — One or two revision rounds, no more. Additional
+   retries don't help — they waste tokens. Fix the prompt or the blueprint
+   instead.
 
 7. **Scoped rules** — What's good for human developers is good for agents.
-   Discover and inject `CLAUDE.md`, `.cursorrules`, etc. automatically.
+   Discover and inject CLAUDE.md, .cursorrules, etc. automatically.
 
 8. **Pre-warm everything** — Sandbox pool, code index, rules cache. The first
    session should feel instant.
 
 ### For Maximum Adoption
 
-9. **30-second quickstart** — `docker compose up` and `curl`. No setup wizard,
-   no account creation, no cloud dependency. Just works.
+9. **30-second quickstart** — One command to start, one command to send a task.
+   No setup wizard, no account creation, no cloud dependency. Just works.
 
 10. **Agent-agnostic** — Support every coding agent. Don't pick winners. The
     user chooses. TeleCoder orchestrates.
