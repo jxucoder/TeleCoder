@@ -1,469 +1,331 @@
-# TeleCoder — Design for Maximum Adoption
+# TeleCoder Design
 
-> The open framework for async coding agents.
-> Any model. Any codebase. Any scale.
-
----
-
-## Thesis
-
-TeleCoder should be to **async coding agents** what Docker is to containers
-or FastAPI is to Python APIs: the obvious default that everyone reaches for.
-
-The insight from Stripe Minions: the coding agent (Claude Code, Codex, etc.)
-is ~20% of the value. The other 80% is the **orchestration around it**:
-
-- Pre-computing relevant context (rules, code, past sessions)
-- English blueprints that describe what the agent should do
-- Deterministic guardrails that enforce quality and security (non-negotiable)
-- Sandbox isolation with pre-warming
-- Smart output routing (PR, text reply, report, PR comments — whatever fits)
-- Multi-repo: agent clones what it needs, framework guardrails each repo
-
-TeleCoder owns that 80%. It doesn't replace Claude Code — it makes Claude Code
-(and Codex, and OpenCode, and Aider, and your custom agent) work reliably in
-production.
-
-### What makes projects maximally popular
-
-1. **Clear identity** — one sentence explains what it is
-2. **Instant gratification** — working in 30 seconds
-3. **Small core** — fits in your head (and in an AI's context window)
-4. **Low floor, high ceiling** — easy to start, scales to Stripe
-5. **Extensible without complexity** — plugins, not config sprawl
-
-TeleCoder's identity: **"Send a task in English. An agent does the work in a
-sandbox. Guardrails enforce quality. You get the result — PR, text answer,
-report, whatever the task requires."**
+> Send a task. An agent does the work in a sandbox. You get the result.
 
 ---
 
-## Architecture
+## The Problem
 
-Four components, each independently useful:
+Coding agents are powerful and unreliable.
 
-**Channels** receive tasks from the outside world — CLI, HTTP API, Slack,
-Telegram, GitHub, Linear, Jira. Each channel is a thin adapter that normalizes
-incoming messages into a task.
+Claude Code, Codex, OpenCode — any of them can implement a feature, fix a bug,
+or answer a question about a codebase. But running them in production requires
+solving the same problems every team solves independently:
 
-**Engine** manages sessions, events, memory, and dispatch. It decides which
-agent handles the task, tracks state, and coordinates the lifecycle.
+- Where does the agent run? (not on your laptop)
+- How do you prevent it from leaking secrets?
+- How do you ensure it runs tests before shipping?
+- How does it know about your codebase conventions?
+- How do you trigger it from Slack, GitHub, or a cron job?
+- How do you track what it did?
 
-**Blueprints and Guardrails** define what the agent should do (English) and
-what the framework enforces (deterministic checks). The blueprint instructs;
-the guardrails constrain.
-
-**Sandbox** provides isolated execution — Docker by default, with pluggable
-support for E2B, Modal, Fly, or any container platform. A pre-warm pool keeps
-startup fast.
-
-Underneath everything sits a SQLite store for persistence, a codebase memory
-system (code index + notes + past sessions), and an event bus for real-time
-streaming via SSE.
-
-Total core: **~4500 lines of Go**. The rest is channels, tests, CLI, and web UI.
+Every team rebuilds this infrastructure from scratch. TeleCoder is that
+infrastructure, packaged as a small open-source framework.
 
 ---
 
-## The Two Core Ideas
+## What TeleCoder Is
 
-### 1. Blueprints — English-First Workflow Descriptions
+TeleCoder is an orchestration layer for coding agents. It receives a task
+from anywhere (CLI, Slack, Telegram, GitHub, Linear, Jira, HTTP API), spins
+up a sandboxed environment, runs whatever coding agent you choose, verifies
+the output, and delivers the result — a pull request if code changed, a text
+answer if not.
 
-A blueprint is a **natural language description** of what the agent should do.
-Not Go. Not YAML. Not shell scripts. **English.**
-
-A typical blueprint lives at **.telecoder/blueprint.md** in the repo and reads
-like this: "You are a coding agent working on this repository. When given a
-task, understand the codebase context and coding conventions, implement the
-requested changes, make sure all tests pass, fix failures if needed (up to 2
-attempts), and write a clear PR description explaining what changed and why.
-If the task is a question, just answer it directly."
-
-That's it. Drop this file in your repo and TeleCoder uses it to instruct the
-agent. Anyone can write a blueprint. Anyone can customize the workflow. No
-programming language required.
-
-The framework prepends the blueprint + gathered context to the agent's prompt,
-then dispatches to whatever agent is configured (Claude Code, Codex,
-OpenCode, etc.). The agent handles the multi-step execution internally — these
-are powerful coding agents, they know how to plan and execute.
-
-**Why English?** Because English is the most universal "programming language."
-A PM can write a blueprint. A security team can write a blueprint. An intern
-can write a blueprint. English blueprints scale to any team, any skill level.
-
-**Different blueprints for different tasks.** You can have separate blueprints
-for different workflows:
-
-- **review.md** — instructs the agent to act as a code reviewer, analyze PR
-  diffs, list issues by severity, and respect the project's linter config
-- **security-audit.md** — instructs the agent to scan for vulnerabilities,
-  run security tools if available, and produce a severity-grouped report
-- **data-analysis.md** — instructs the agent to run analysis scripts and
-  produce a summary with key findings and recommended actions
-
-The agent does the agentic work. The blueprint tells it what to focus on.
-
-### 2. Guardrails — Deterministic, Non-Negotiable, Always-On
-
-Here's what Stripe learned: you don't ask the agent to run tests. You don't
-ask the agent to scan for secrets. You don't write a blueprint step for it.
-**The framework does it automatically, every time, non-negotiably.**
-
-Guardrails are **deterministic checks** that run before and after agent
-execution. They are not part of the blueprint. They are not opt-in. They are
-the framework's job.
-
-The flow is: **Blueprint** feeds into **Pre-Guardrails** (context enrichment,
-rules injection, secret scan on inputs), then the **Agent** works in a sandbox,
-then **Post-Guardrails** run (secret scan on output, lint, tests, size limits,
-scope check). If post-guardrails fail, failures are fed back to the agent for
-a bounded number of retries. Once everything passes, the **Output** is
-delivered — PR, text reply, comments, report — whatever fits.
-
-**Built-in guardrails:**
-
-| Guardrail | When | What |
-|-----------|------|------|
-| **Context enrichment** | Pre | Inject codebase memory, scoped rules, past sessions |
-| **Secret scan** | Pre + Post | Detect API keys, tokens, passwords in inputs and outputs |
-| **Lint check** | Post | Auto-detect linter, run it, feed failures back to agent |
-| **Test run** | Post | Auto-detect test framework, run it, feed failures back |
-| **Size limit** | Post | Reject changes that touch too many files (configurable) |
-| **Scope check** | Post | Warn if agent modified files outside expected scope |
-| **Retry budget** | Post | Bounded retries (default 1-2) — don't burn tokens |
-
-**Custom guardrails** are any executable that returns pass/fail, defined in
-**.telecoder/guardrails.yaml**. Examples: run the TypeScript compiler with
-no-emit to type-check, run semgrep for security scanning, or grep for banned
-patterns like console.log in production code. Each custom guardrail has a name
-and a shell command — nothing more.
-
-**Why this split matters:**
-
-- The **blueprint** (English) is for the team — it describes what you want.
-- The **guardrails** (deterministic) are for the framework — they enforce
-  quality and security regardless of what the blueprint says.
-- An agent can ignore an English instruction. It **cannot** bypass a guardrail.
-
-This is the Stripe lesson distilled: hybrid orchestration where the agentic
-parts are flexible (English) and the deterministic parts are rigid (guardrails).
-
-### How They Work Together
-
-Consider the task "add rate limiting to /api/users":
-
-1. The **blueprint** is loaded — it says to implement changes, ensure tests
-   pass, and write a clear PR description.
-2. **Pre-guardrails** run — gather related code context, load CLAUDE.md rules
-   and notes, secret-scan the inputs. Everything is clean. This context is
-   prepended to the agent's prompt.
-3. The **agent** executes in a sandbox with the enriched prompt. Claude Code
-   edits files, writes tests, does its thing.
-4. **Post-guardrails** run — secret scan the output (clean), run the linter
-   (passes), run the tests (2 failures detected). Failures are fed back to
-   the agent. The agent fixes the issues. Tests pass on round 2. Size check:
-   4 files changed, within limits.
-5. **Output** — files changed, so the framework commits, pushes, and creates
-   a pull request.
-
-### Programmatic Escape Hatch
-
-For companies building products on TeleCoder that need precise orchestration
-control, blueprints can also be Go functions. This gives full control over
-multi-agent orchestration, custom verification logic, and external API calls.
-But it's the power-user path, not the default.
-
-Even programmatic blueprints get guardrails applied automatically. You can't
-accidentally skip the secret scan.
-
-### The Run Object — Layered Primitives
-
-The Run has two layers of capabilities:
-
-**Generic primitives** work for any agent task — sandbox operations (execute
-commands, read files, write files), agent invocation (send a prompt, get a
-response, optionally with a specific model), context gathering (enrich the
-prompt with memory and rules), output (reply with text, finalize with smart
-defaults, emit SSE events), and state queries (check if files changed).
-
-**Coding helpers** are convenience methods built entirely on the generic
-primitives — verify (auto-detect and run lint + test commands), lint fix, test
-only, git push, amend push, create PR, comment on PR, wait for CI. These are
-why TeleCoder is great for coding agents specifically, but they're just
-wrappers around the generic layer.
-
-A framework builder who doesn't care about PRs or linting never touches the
-coding helpers. They use the generic primitives and build whatever workflow
-they need.
+The agent does the thinking. TeleCoder handles everything around it.
 
 ---
 
-## Multi-Repo Tasks
+## How It Works
 
-Real-world tasks often span multiple repositories. Update an API and its
-client. Change a shared schema and all its consumers. Upgrade a library
-across dependent repos.
+A task arrives. This is the full lifecycle:
 
-### The wrong approach: pre-define repos upfront
+**1. Receive.** A channel (Slack, CLI, GitHub webhook, etc.) normalizes the
+incoming message into a task: a repo and a prompt.
 
-Listing repos in the task request is limiting. You're deciding upfront which
-repos the agent needs. But the agent might discover mid-task that it needs
-another repo. Or realize the client library is fine and only the server needs
-changes. Pre-defining repos is the same mistake as pre-defining steps — it
-constrains the agent to what you anticipated.
+**2. Enrich.** The framework gathers context before the agent sees the task.
+It retrieves relevant code snippets from the codebase memory index, loads
+knowledge notes about the repo, and finds past session summaries that relate
+to the current prompt. This context is prepended to the prompt so the agent
+starts with understanding, not from zero.
 
-### The right approach: give the agent git access, let it work
+**3. Sandbox.** A Docker container starts with the repo cloned and credentials
+injected. The agent cannot touch anything outside the container. A pre-warm
+pool keeps startup fast — containers are ready before tasks arrive.
 
-The sandbox has git credentials. The agent can clone any repo it has access to.
-It decides at runtime what it needs. The framework **watches and reacts**.
+**4. Execute.** The coding agent (Claude Code, OpenCode, Codex, or auto-
+selected based on available API keys) runs inside the sandbox with the
+enriched prompt. It reads code, edits files, runs commands — whatever it
+decides is needed. TeleCoder streams its output as events in real time.
 
-For a task like "add rate limiting to the API and update the Python client":
+**5. Verify.** After the agent finishes, the framework auto-detects the
+project's test and lint commands and runs them. If they fail, the failures
+are fed back to the agent for another attempt (bounded to 1-2 rounds to
+avoid wasting tokens). This happens automatically — no configuration needed.
 
-1. The agent clones the API server repo and the Python client repo
-2. It edits both (and maybe clones a third repo just to read how another
-   service handles rate limiting)
-3. The framework scans the sandbox afterward — discovers 2 repos with changes,
-   notes the third was cloned but unchanged (skip it)
-4. Post-guardrails run **per repo** — each repo gets its own secret scan, lint,
-   and test run, using that repo's own configuration
-5. Output: one PR per changed repo, cross-linked in their descriptions
-
-### What the framework does (not the user)
-
-1. **Before**: Inject git credentials into the sandbox so the agent can clone
-2. **After**: Walk the filesystem, find all git repos with uncommitted changes
-3. **Per changed repo**: Load its .telecoder/ config, discover its lint/test
-   commands, run guardrails
-4. **Output**: Create a PR for each changed repo, cross-link them
-
-The user's task request is just a prompt — "Add rate limiting to the API and
-update the Python client." No repos field. No upfront configuration. The agent
-figures out which repos it needs, the framework handles everything after.
-
-### Why this is better
-
-- Agent can discover dependencies dynamically (clone a repo to read it, not change it)
-- Agent can decide mid-task that a repo doesn't need changes
-- Agent can clone repos you didn't anticipate
-- Zero configuration for multi-repo — it just works
-- Single-repo tasks work identically (one repo detected, one PR created)
+**6. Deliver.** If code changed, the framework commits, pushes, and opens a
+pull request. If no code changed (the task was a question), the text answer
+is returned directly. The output format is determined by what happened, not
+by what was configured upfront.
 
 ---
 
-## Scoped Rules (Stripe Pattern)
+## Core Concepts
 
-Stripe discovered that **what's good for human developers is good for agents**.
-Every codebase has conventions documented in .cursorrules, CLAUDE.md, AGENTS.md,
-.github/copilot-instructions.md, and similar files. TeleCoder auto-discovers
-and injects these.
+### Blueprints
 
-During the pre-guardrail phase, the framework searches each repo for rules
-files — CLAUDE.md, AGENTS.md, .cursorrules, .github/copilot-instructions.md,
-.telecoder/rules.md, and any files under .telecoder/rules/. It finds the most
-relevant rules for the current task and prepends them to the agent's prompt
-alongside the blueprint.
+A blueprint is a markdown file that tells the agent what kind of work to do
+and how to approach it. It lives at **.telecoder/blueprint.md** in the repo.
 
-This is zero-config for repos that already have agent rules — which is most
-active repos in 2026.
+A blueprint is English. Not code. Not YAML. A product manager can write one.
+A security team can write one. An intern can write one.
+
+The framework prepends the blueprint to the agent's prompt before execution.
+If no blueprint exists, a sensible default is used. Different blueprints can
+exist for different task types — one for code review, one for security audits,
+one for data analysis.
+
+The key insight: the blueprint describes intent, not steps. The coding agent
+is sophisticated enough to plan and execute on its own. The blueprint shapes
+what it focuses on.
+
+### Guardrails
+
+Guardrails are deterministic checks that the framework runs before and after
+agent execution. They are not optional. They are not part of the blueprint.
+They are the framework's responsibility.
+
+**Before the agent runs:** context enrichment (inject codebase memory and
+scoped rules), secret scanning on inputs.
+
+**After the agent runs:** secret scanning on outputs, lint check, test run,
+change size limits, scope check. If any post-guardrail fails, the failure is
+fed back to the agent for a bounded retry.
+
+The critical distinction: an agent can ignore an English instruction in a
+blueprint. It cannot bypass a guardrail. Blueprints are flexible. Guardrails
+are rigid. This is the hybrid orchestration pattern — agentic where flexibility
+helps, deterministic where correctness matters.
+
+Custom guardrails are defined in **.telecoder/guardrails.yaml** — each one is
+a name and a shell command that returns pass or fail.
+
+### Scoped Rules
+
+Every codebase has conventions — documented in CLAUDE.md, AGENTS.md,
+.cursorrules, .github/copilot-instructions.md, or similar files. TeleCoder
+auto-discovers these during the pre-guardrail phase and injects them into the
+agent's prompt alongside the blueprint.
+
+What's good for human developers is good for agents. If your repo already has
+agent rules, TeleCoder uses them automatically.
+
+### Sandbox
+
+Every task runs in an isolated Docker container. The agent cannot access the
+host filesystem, network services it shouldn't reach, or other sessions. Docker
+is the default runtime, with a pluggable interface for E2B, Modal, Fly, or any
+container platform.
+
+A pre-warm pool keeps containers ready before tasks arrive. The first session
+should feel instant.
+
+### Codebase Memory
+
+TeleCoder maintains a semantic index of each repository it works with. Code is
+chunked by language-aware parsers (AST-based for Go, regex-based for Python,
+JavaScript, TypeScript, Rust, Java, Ruby), embedded into vectors, and stored
+in SQLite with sqlite-vec for similarity search.
+
+Three kinds of memory feed into prompt enrichment:
+
+- **Code context** — relevant code snippets retrieved by hybrid search
+  (keyword + vector similarity, merged with reciprocal rank fusion)
+- **Knowledge notes** — durable key-value facts about a repo (architecture
+  decisions, conventions, known issues) that persist across sessions
+- **Session history** — summaries of past sessions for the same repo, so
+  the agent doesn't repeat mistakes or miss context from prior work
+
+### Multi-Repo
+
+Tasks that span multiple repositories work without configuration. The sandbox
+has git credentials injected. The agent clones whatever repos it needs. After
+execution, the framework walks the filesystem, discovers all repos with changes,
+runs guardrails per-repo using each repo's own configuration, and creates a PR
+for each changed repo — cross-linked in their descriptions.
+
+No repos field in the task request. The agent decides at runtime.
+
+### Channels
+
+Channels are thin adapters that receive tasks from external systems and deliver
+results back. Each channel normalizes messages into tasks and routes results
+to the appropriate destination.
+
+| Channel | Trigger | Output |
+|---------|---------|--------|
+| **CLI** | Command line | Terminal output, PR link |
+| **HTTP API** | REST endpoint | JSON response, SSE event stream |
+| **Slack** | Message or mention | Thread reply with PR link or answer |
+| **Telegram** | Bot message | Reply with PR link or answer |
+| **GitHub** | Issue, PR comment, webhook | PR, issue comment |
+| **Linear** | Issue label or assignment | Issue comment with result |
+| **Jira** | Issue transition or label | Issue comment with result |
+
+### Dispatch
+
+An LLM-powered dispatcher examines incoming events and decides the appropriate
+action: create a task session, ignore the message, or route to a specific agent.
+This replaces keyword matching with intelligent classification.
+
+### Agent Chains
+
+After a session completes, the dispatcher can evaluate the result and spawn a
+follow-up session — for example, running a security audit after a feature PR is
+created. Chains have a depth limit (default 3) to prevent loops, and a chain ID
+links related sessions.
+
+### Scheduling
+
+Recurring tasks are defined in **.telecoder/jobs/** as YAML files with cron
+expressions. The scheduler triggers sessions automatically — useful for nightly
+security scans, weekly dependency updates, or daily test runs.
 
 ---
 
-## What TeleCoder Already Has (v2, Complete)
+## What Exists Today
 
-| Component | Status | Lines |
-|-----------|--------|-------|
-| Docker sandbox with pre-warm pool | Done | ~500 |
-| Engine (sessions, events, memory) | Done | ~1250 |
-| 4 coding agents (OpenCode, Claude Code, Codex, Pi) | Done | ~200 |
-| LLM-powered dispatcher | Done | ~140 |
-| Agent chains (depth-limited) | Done | ~70 |
-| Codebase memory (code index + notes + sessions) | Done | ~1000 |
-| Verify (auto-detect test/lint commands) | Done | ~40 |
-| 5 channels (Slack, Telegram, GitHub, Linear, Jira) | Done | ~1400 |
-| Cron scheduler | Done | ~130 |
-| HTTP API + SSE | Done | ~375 |
-| Web dashboard | Done | ~400 (TS) |
-| CLI (serve, run, list, status, config) | Done | ~650 |
-| Builder pattern (plug anything) | Done | ~200 |
-| SQLite store | Done | ~375 |
-| Event bus | Done | ~70 |
-| **Total** | | **~6800** |
+The v2 architecture is complete and working. Here is what the codebase contains:
 
-The foundation is solid. What's needed for maximum adoption is **not more
-features** — it's refinement, positioning, and the blueprint pattern.
+| Component | What it does |
+|-----------|-------------|
+| **Docker sandbox** | Container lifecycle, persistent containers for chat mode, pre-warm pool |
+| **Engine** | Session management (task mode and chat mode), event streaming, prompt enrichment, multi-step execution with checkpoints, verify-and-retry loop, PR comment sessions, idle session reaper |
+| **Coding agents** | Four implementations — OpenCode, Claude Code, Codex, Pi — each providing command generation and output parsing behind a common interface |
+| **Dispatcher** | LLM-powered event routing that classifies incoming messages and decides actions |
+| **Agent chains** | Follow-up session spawning with depth limiting and chain linking |
+| **Codebase memory** | Code indexing with language-aware chunking, vector + keyword hybrid search, knowledge notes, session summaries |
+| **Verify** | Auto-detection of test and lint commands based on project files (go.mod, package.json, Cargo.toml, etc.) |
+| **Channels** | Slack, Telegram, GitHub webhooks, Linear, Jira |
+| **Scheduler** | Cron-based recurring task execution |
+| **HTTP API** | REST endpoints for session management, SSE for real-time event streaming |
+| **Web dashboard** | TypeScript frontend for monitoring sessions |
+| **CLI** | Commands for serve, run, list, status, logs, config |
+| **Builder pattern** | Pluggable composition — swap any component (store, sandbox, git provider, bus, channels) |
+| **SQLite store** | Session persistence, event storage, message history |
+| **Event bus** | In-memory pub/sub for real-time updates |
+
+The core is approximately 6800 lines of Go. Total with channels, tests, CLI,
+and web UI is larger, but the framework a contributor needs to understand is
+small enough to read in a single sitting.
 
 ---
 
 ## What to Build Next
 
-### Phase 1: Blueprints + Guardrails (the differentiator)
+### Blueprints and Guardrails
 
-**Goal**: English-first blueprints with deterministic guardrails. Extract the
-current hardcoded task flow into the guardrails framework. Add blueprint
-loading from .telecoder/blueprint.md.
+The current verify-and-retry loop is hardcoded in the engine. Extract it into
+an explicit guardrails framework. Add blueprint loading from
+.telecoder/blueprint.md. Add custom guardrails from .telecoder/guardrails.yaml.
+Add scoped rules discovery (auto-find CLAUDE.md, .cursorrules, etc.).
 
-1. Define the Blueprint type — English loader plus Go function escape hatch — and the Run struct
-2. Blueprint discovery — load .telecoder/blueprint.md and prepend to prompt
-3. Guardrails framework — pre-guard, post-guard, retry loop
-4. Built-in guardrails — secret scan, lint, test, size limit
-5. Custom guardrails from .telecoder/guardrails.yaml
-6. Wire into engine via the Builder pattern
-7. Scoped rules discovery in pre-guard (CLAUDE.md, .cursorrules, etc.)
+This is the differentiator. It makes TeleCoder's value proposition visible
+and configurable rather than hidden in engine internals.
 
-**Eval**: All tests pass. Default behavior identical but now with guardrails
-enforced. English blueprints work via .telecoder/blueprint.md.
+### Memory Security
 
-### Phase 2: Memory Security (trust)
+Code memory stores proprietary source code. Before companies trust it, the
+system needs: a secret scanner that detects API keys and tokens before indexing,
+content sanitization when injecting context into prompts, repo-scoped isolation
+to prevent cross-repo data leaks, and audit events on every memory operation.
 
-Companies won't use a framework that leaks secrets into agent prompts.
+### Developer Experience
 
-1. Secret scanner — regex patterns for AWS keys, GitHub tokens, JWTs, etc.
-2. Integrate scanner into the chunk insertion pipeline
-3. Skip sensitive files (.env, .pem, etc.) during indexing
-4. Content sanitization when enriching prompts
-5. Audit events on memory operations
+A one-command quickstart that works. A tutorial that gets someone from zero to
+a working task in five minutes. Example blueprints for common workflows. A
+README that tells the blueprint story front and center.
 
-**Eval**: No .env or .pem files indexed. No API keys in retrieved chunks.
+### Ecosystem
 
-### Phase 3: Developer Experience (adoption)
-
-1. One-command quickstart via docker compose
-2. "Build your first async agent in 5 minutes" tutorial
-3. Example blueprints gallery (security, CI-aware, multi-agent)
-4. README rewrite focused on the blueprint story
-5. GitHub Actions template for "TeleCoder as CI bot"
-
-### Phase 4: Ecosystem (network effects)
-
-1. MCP server — expose memory as MCP tools
-2. MCP client — consume external tools as memory providers
-3. Ollama embedder — zero-API-key local memory
-4. Webhook-driven reindexing (reindex on git push)
-5. Provider interfaces for memory (Qdrant, Mem0, etc.)
+MCP server to expose memory as tools for external editors. MCP client to consume
+external memory providers. Ollama embedder for zero-API-key local operation.
+Webhook-driven reindexing so the code index stays fresh.
 
 ---
 
-## What NOT to Build (Yet)
+## What Not to Build Yet
 
-The v3 design proposed a full conversational agent (Agent Loop, Heartbeat,
-Skills, Gateway). That's the right long-term vision, but it's **too much
-surface area for adoption**.
+The v3 design proposed a full conversational agent with heartbeat monitoring,
+a skill system, and bidirectional gateway channels. That's the right long-term
+direction, but it's too much surface area for adoption.
 
-Projects get popular by doing **one thing brilliantly**, then expanding:
-- Docker started as containers, then added Compose, Swarm, Hub
-- FastAPI started as a framework, then added background tasks, WebSockets
-- Next.js started as SSR React, then added API routes, middleware
+Projects get popular by doing one thing brilliantly, then expanding. Docker
+started with containers. FastAPI started with a web framework. Next.js started
+with server-side rendering. Each expanded after becoming the default.
 
-TeleCoder's "one thing": **send a task in English, agent works freely in a
-sandbox, guardrails enforce quality, you get the result**. Once that's the
-default, expand to conversations, heartbeat, and proactive monitoring.
-
-### Defer to Phase 2 (after adoption)
-
-- Full conversational agent (Agent Loop replaces Engine)
-- Heartbeat (proactive CI/PR/dep monitoring)
-- Bidirectional gateway channels
-- Skill system (code.edit, code.review, etc.)
-- WhatsApp/Discord channels
-- Multi-user/team mode
-
-These are valuable but not necessary for the core value proposition.
+TeleCoder's one thing: send a task, agent works in a sandbox, guardrails enforce
+quality, you get the result. Once that's the obvious default for running coding
+agents in production, expand to conversations, heartbeat, and proactive
+monitoring.
 
 ---
 
-## Design Principles (Lessons Learned)
+## Design Principles
 
-### From NanoClaw
+**Small auditable core.** The entire engine fits in a few thousand lines of Go.
+Any developer — or AI agent — can read and understand the whole thing. This is
+the meta-insight: the framework is maximally forkable because it's small enough
+for AI to operate on.
 
-1. **Small auditable core** — The entire engine + blueprint + sandbox fits in
-   ~4500 lines. Any AI agent can read, understand, and modify the whole thing.
-   This is the meta-insight: the framework is maximally forkable because it's
-   small enough for AI to operate on.
+**English is configuration.** Blueprints are markdown files. Guardrails config
+is a short YAML file. Scoped rules are the same files human developers already
+write for their editors. No DSL. No custom language. No learning curve.
 
-2. **English IS configuration** — Blueprints are markdown files anyone can
-   write. Guardrails are the framework's job, not the user's. Go functions
-   exist as an escape hatch for power users, not the default path.
+**Sandboxes by default.** Every task runs isolated. This is non-negotiable. The
+default is Docker. The interface supports any container platform.
 
-3. **Sandboxes by default** — Every task runs in an isolated container. Docker
-   is the default runtime, but the sandbox interface supports E2B, Modal, Fly,
-   Firecracker, or any container platform.
+**Separate agentic from deterministic.** Blueprints (agentic, flexible) describe
+what the agent should do. Guardrails (deterministic, rigid) enforce what must be
+true regardless. The agent handles ambiguity. The framework handles correctness.
 
-### From Stripe Minions
+**Shift feedback left.** Run tests and lint locally in the sandbox before
+creating a PR. Don't waste CI cycles on failures the framework can catch.
 
-4. **Separate agentic from deterministic** — English blueprints dispatch
-   agents. Deterministic guardrails enforce quality and security. The agent
-   can't bypass the guardrails. This is the hybrid orchestration pattern.
+**Bounded retries.** One or two revision rounds, no more. If the agent can't
+pass tests in two tries, the problem is the prompt or the blueprint, not
+insufficient attempts.
 
-5. **Shift feedback left** — Lint locally before pushing. Test locally before
-   creating the PR. Don't waste CI cycles on obvious failures.
+**Agent-agnostic.** Support every coding agent. Don't pick winners. Let the
+user choose. TeleCoder orchestrates whichever agent they prefer.
 
-6. **Bounded retries** — One or two revision rounds, no more. Additional
-   retries don't help — they waste tokens. Fix the prompt or the blueprint
-   instead.
+**Progressive disclosure.** Zero config works (sensible defaults, auto-detected
+agent, auto-detected test commands). Custom blueprints for teams that want
+control. Provider interfaces for companies that need to swap internals. Each
+level is opt-in.
 
-7. **Scoped rules** — What's good for human developers is good for agents.
-   Discover and inject CLAUDE.md, .cursorrules, etc. automatically.
+**Forkability over extensibility.** A developer who forks TeleCoder and modifies
+the source should have an easier time than one who writes plugins. Keep the core
+small enough to modify directly.
 
-8. **Pre-warm everything** — Sandbox pool, code index, rules cache. The first
-   session should feel instant.
-
-### For Maximum Adoption
-
-9. **30-second quickstart** — One command to start, one command to send a task.
-   No setup wizard, no account creation, no cloud dependency. Just works.
-
-10. **Agent-agnostic** — Support every coding agent. Don't pick winners. The
-    user chooses. TeleCoder orchestrates.
-
-11. **Progressive disclosure** — Default blueprint works with zero config.
-    Custom blueprints for power users. Provider interfaces for companies.
-    Each level is opt-in.
-
-12. **Forkability over extensibility** — A developer who forks TeleCoder and
-    modifies the source should have an easier time than one who writes plugins.
-    Keep the core small enough to modify directly.
+**Pre-warm everything.** Sandbox pool, code index, rules cache. The first task
+should feel instant.
 
 ---
 
 ## Comparison
 
-| Feature | TeleCoder | Claude Code | Codex CLI | SWE-agent |
-|---------|-----------|-------------|-----------|-----------|
+| | TeleCoder | Claude Code | Codex CLI | SWE-agent |
+|---|-----------|-------------|-----------|-----------|
 | Async (fire-and-forget) | Yes | No | Yes | No |
-| English blueprints + guardrails | Yes | No | No | No |
-| Agent-agnostic | Yes (4 agents) | Claude only | OpenAI only | Any LLM |
-| Sandbox by default | Yes (pluggable) | Optional | Yes | Docker |
-| Multi-repo tasks | Yes | No | No | No |
-| Pre-warm pool | Yes | No | No | No |
+| Blueprints + guardrails | Yes | No | No | No |
+| Agent-agnostic | 4 agents | Claude only | OpenAI only | Any LLM |
+| Sandbox by default | Pluggable | Optional | Yes | Docker |
+| Multi-repo | Yes | No | No | No |
 | Codebase memory | Yes | Yes | No | No |
-| Multi-channel (Slack, etc.) | Yes | No | No | No |
+| Multi-channel | 5 channels | No | No | No |
 | Verify + retry | Yes | No | No | Yes |
-| Scoped rules | Yes | CLAUDE.md | No | No |
-| Lines of core code | ~4500 | ~50K+ | ~10K+ | ~5K |
+| Scoped rules auto-discovery | Yes | CLAUDE.md | No | No |
 
-TeleCoder's unique position: it's the **orchestration layer** that makes any
-of these agents work better — and it doesn't force every task into a PR-shaped
-box.
-
----
-
-## Success Metrics
-
-TeleCoder is maximally popular when:
-
-1. **"telecoder" is the first thing you google** when you want to run a coding
-   agent in CI, on a cron, or from Slack.
-
-2. **Companies fork it** as the foundation for their internal coding agent
-   infra (like Stripe did with their own system).
-
-3. **The English blueprint + guardrails pattern becomes a standard** — other
-   tools adopt the same concept of English-described workflows with
-   deterministic quality enforcement.
-
-4. **Contributors add agents, channels, and blueprints** without touching the
-   core engine — the extension points are that clean.
-
-5. **The README example works in 30 seconds** for any developer with Docker
-   installed.
+TeleCoder is the orchestration layer that makes any coding agent work reliably
+in production.
