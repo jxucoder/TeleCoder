@@ -13,11 +13,8 @@
 # Update system
 sudo apt update && sudo apt upgrade -y
 
-# Install dependencies
-sudo apt install -y python3 python3-pip python3-venv git curl
-
-# Verify Python version (needs 3.11+)
-python3 --version
+# Install dependencies (install.sh does this too)
+sudo apt install -y git tmux sqlite3 curl
 ```
 
 ## Install Node.js (for Claude Code)
@@ -33,7 +30,7 @@ sudo apt install -y nodejs
 npm install -g @anthropic-ai/claude-code
 ```
 
-Verify it works:
+Verify:
 
 ```bash
 claude --version
@@ -45,35 +42,13 @@ claude --version
 cd /opt
 git clone https://github.com/your-org/telecoder.git
 cd telecoder
-sudo bash install.sh
+sudo ./install.sh
 ```
 
 ## Firewall
 
-If you want to use the web UI remotely:
+If you want remote access later:
 
 ```bash
-sudo ufw allow 7830/tcp
-```
-
-For production, put it behind a reverse proxy with HTTPS.
-
-## Reverse Proxy (Optional)
-
-Example nginx config:
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name telecoder.yourdomain.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:7830;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
+sudo ufw allow 22/tcp    # SSH
 ```

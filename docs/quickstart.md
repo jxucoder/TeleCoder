@@ -5,79 +5,68 @@ Get TeleCoder running on your VPS in under 5 minutes.
 ## Prerequisites
 
 - Ubuntu 22.04+ VPS (2GB+ RAM recommended)
-- Python 3.11+
-- Git
-- Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code`)
-- An Anthropic API key
+- Git, tmux, sqlite3 (installed automatically by install script)
+- Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
+- An Anthropic API key (set as `ANTHROPIC_API_KEY` env var)
 
 ## Install
 
-SSH into your VPS and run:
-
 ```bash
-sudo bash install.sh
-```
-
-Or install manually:
-
-```bash
-pip3 install telecoder
-telecoder init
+git clone https://github.com/you/telecoder
+cd telecoder
+sudo ./install.sh
 ```
 
 ## Configure
 
-Edit `/etc/telecoder/config.toml`:
-
-```toml
-[runtime.env]
-ANTHROPIC_API_KEY = "sk-ant-your-key-here"
-```
-
-## Start the service
+Edit `~/.config/telecoder/config.sh` (user install) or `/etc/telecoder/config.sh` (system install):
 
 ```bash
-sudo systemctl start telecoder
-sudo systemctl enable telecoder
+TELECODER_RUNTIME="claude"   # path to claude CLI
 ```
 
-## Create your first session
+Make sure your `ANTHROPIC_API_KEY` is set in your shell environment.
+
+## Initialize
 
 ```bash
-# Point TeleCoder at a repo
-telecoder session create --repo-url https://github.com/you/your-repo
+telecoder init
+```
+
+## Create and run a session
+
+```bash
+# Create a session from a repo
+telecoder create --repo-url https://github.com/you/your-repo
 
 # Run a task
-telecoder session run <session-id> "fix the failing tests in src/auth.py"
+telecoder run <session-id> fix the failing tests in src/auth.py
 
 # Check status
-telecoder session list
+telecoder list
 
 # View output
-telecoder session logs <session-id>
+telecoder logs <session-id>
 
 # See full details
-telecoder session inspect <session-id>
+telecoder inspect <session-id>
 ```
 
 ## Close your laptop
 
-The session keeps running on the VPS. Come back later and check the results:
+The session runs in tmux on the VPS. Come back later:
 
 ```bash
-telecoder session inspect <session-id>
+# Check results
+telecoder inspect <session-id>
+
+# Or attach to the live tmux session
+telecoder attach <session-id>
 ```
 
 ## Stop or resume
 
 ```bash
-# Stop a running session
-telecoder session stop <session-id>
-
-# Resume with a new prompt
-telecoder session resume <session-id> "now run the linter and fix warnings"
+telecoder stop <session-id>
+telecoder run <session-id> now run the linter and fix warnings
 ```
-
-## Web UI
-
-Visit `http://your-vps-ip:7830` to see sessions in a browser.

@@ -3,9 +3,10 @@ set -euo pipefail
 
 # TeleCoder Installer
 # Usage: curl -fsSL https://your-domain/install.sh | bash
+#   or:  git clone ... && cd telecoder && sudo ./install.sh
 
-TELECODER_USER="telecoder"
-TELECODER_DATA="/var/lib/telecoder"
+INSTALL_DIR="/usr/local/share/telecoder"
+BIN_LINK="/usr/local/bin/telecoder"
 TELECODER_CONFIG="/etc/telecoder"
 
 echo "=== TeleCoder Installer ==="
@@ -17,112 +18,50 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Check for Python 3.11+
-if ! command -v python3 &>/dev/null; then
-    echo "Python 3 not found. Installing..."
-    apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv git
-fi
+# Check dependencies
+for dep in bash git sqlite3 tmux; do
+    if ! command -v "$dep" &>/dev/null; then
+        echo "$dep not found. Installing..."
+        apt-get update -qq && apt-get install -y -qq "$dep"
+    fi
+done
 
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
-PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
+echo "Dependencies OK."
 
-if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 11 ]; }; then
-    echo "Python 3.11+ required. Found: $PYTHON_VERSION"
-    exit 1
-fi
+# Copy telecoder to install dir
+echo "Installing to ${INSTALL_DIR}..."
+mkdir -p "$INSTALL_DIR"
+cp -r bin/ lib/ config.example.sh "$INSTALL_DIR/"
+chmod +x "$INSTALL_DIR/bin/telecoder" "$INSTALL_DIR"/lib/*.sh
 
-echo "Python $PYTHON_VERSION found."
+# Symlink to PATH
+ln -sf "$INSTALL_DIR/bin/telecoder" "$BIN_LINK"
 
-# Create telecoder user if not exists
-if ! id "$TELECODER_USER" &>/dev/null; then
-    useradd --system --home-dir "$TELECODER_DATA" --shell /usr/sbin/nologin "$TELECODER_USER"
-    echo "Created user: $TELECODER_USER"
-fi
-
-# Create directories
-mkdir -p "$TELECODER_DATA"/{workspaces,logs}
+# Copy config if not present
 mkdir -p "$TELECODER_CONFIG"
-
-# Install TeleCoder
-echo "Installing TeleCoder..."
-pip3 install --quiet telecoder 2>/dev/null || {
-    # If not published to PyPI, install from local source
-    if [ -f "pyproject.toml" ]; then
-        pip3 install --quiet .
-    else
-        echo "Could not install telecoder. Ensure pyproject.toml is present or the package is on PyPI."
-        exit 1
-    fi
-}
-
-# Copy example config if no config exists
-if [ ! -f "$TELECODER_CONFIG/config.toml" ]; then
-    if [ -f "config.example.toml" ]; then
-        cp config.example.toml "$TELECODER_CONFIG/config.toml"
-    else
-        # Write a minimal config
-        cat > "$TELECODER_CONFIG/config.toml" <<'TOML'
-[service]
-host = "127.0.0.1"
-port = 7830
-
-[runtime]
-type = "claude-code"
-
-[runtime.env]
-# ANTHROPIC_API_KEY = "sk-ant-..."
-
-[storage]
-data_dir = "/var/lib/telecoder"
-db_path = "telecoder.db"
-
-[git]
-branch_prefix = "telecoder/"
-auto_push = false
-TOML
-    fi
-    echo "Config written to $TELECODER_CONFIG/config.toml"
+if [ ! -f "$TELECODER_CONFIG/config.sh" ]; then
+    cp config.example.sh "$TELECODER_CONFIG/config.sh"
+    # Point data dir to /var/lib for system install
+    sed -i 's|\$HOME/.telecoder|/var/lib/telecoder|' "$TELECODER_CONFIG/config.sh"
+    echo "Config written to $TELECODER_CONFIG/config.sh"
 fi
 
-# Set permissions
-chown -R "$TELECODER_USER:$TELECODER_USER" "$TELECODER_DATA"
-chown -R "$TELECODER_USER:$TELECODER_USER" "$TELECODER_CONFIG"
-
-# Install systemd service
-if [ -d /etc/systemd/system ]; then
-    cat > /etc/systemd/system/telecoder.service <<EOF
-[Unit]
-Description=TeleCoder - Remote Coding Agent Service
-After=network.target
-
-[Service]
-Type=simple
-User=$TELECODER_USER
-Group=$TELECODER_USER
-WorkingDirectory=$TELECODER_DATA
-ExecStart=$(command -v telecoder) --config $TELECODER_CONFIG/config.toml service start
-Restart=on-failure
-RestartSec=5
-Environment=TELECODER_CONFIG=$TELECODER_CONFIG/config.toml
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    echo "Systemd service installed."
-fi
+# Create data dirs
+source "$TELECODER_CONFIG/config.sh"
+mkdir -p "${TELECODER_DATA}"/{workspaces,logs}
 
 echo ""
 echo "=== TeleCoder installed ==="
 echo ""
 echo "Next steps:"
-echo "  1. Edit $TELECODER_CONFIG/config.toml"
-echo "     - Add your ANTHROPIC_API_KEY in [runtime.env]"
-echo "  2. Start the service:"
-echo "     sudo systemctl start telecoder"
-echo "     sudo systemctl enable telecoder"
+echo "  1. Edit $TELECODER_CONFIG/config.sh"
+echo "     - Set TELECODER_RUNTIME if claude is not in PATH"
+echo "  2. Initialize:"
+echo "     telecoder init"
 echo "  3. Create your first session:"
-echo "     telecoder session create --repo-url https://github.com/you/repo"
-echo "     telecoder session run <session-id> 'fix the failing tests'"
+echo "     telecoder create --repo-url https://github.com/you/repo"
+echo "     telecoder run <session-id> 'fix the failing tests'"
+echo ""
+echo "Sessions run in tmux. Close your terminal — they keep going."
+echo "Come back with: telecoder attach <id>"
 echo ""

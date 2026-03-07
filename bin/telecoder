@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# TeleCoder — run a coding agent on your own VPS.
+# A thin CLI that composes: claude CLI + git + tmux + sqlite3.
+
+VERSION="0.1.0"
+
+# Resolve lib directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+
+# Load config
+if [ -f "${TELECODER_CONFIG:-}" ]; then
+    # shellcheck source=/dev/null
+    source "$TELECODER_CONFIG"
+elif [ -f "$HOME/.config/telecoder/config.sh" ]; then
+    source "$HOME/.config/telecoder/config.sh"
+elif [ -f "/etc/telecoder/config.sh" ]; then
+    source "/etc/telecoder/config.sh"
+fi
+
+# Defaults
+TELECODER_DATA="${TELECODER_DATA:-$HOME/.telecoder}"
+TELECODER_RUNTIME="${TELECODER_RUNTIME:-claude}"
+TELECODER_BRANCH_PREFIX="${TELECODER_BRANCH_PREFIX:-telecoder/}"
+TELECODER_AUTO_PUSH="${TELECODER_AUTO_PUSH:-false}"
+
+# Load library modules
+source "${LIB_DIR}/db.sh"
+source "${LIB_DIR}/session.sh"
+source "${LIB_DIR}/verify.sh"
+
+# --- Commands ---
+
+cmd_init() {
+    mkdir -p "${TELECODER_DATA}"/{workspaces,logs}
+    db_init
+    echo "TeleCoder initialized at ${TELECODER_DATA}"
+
+    local config_dest="$HOME/.config/telecoder/config.sh"
+    if [ ! -f "$config_dest" ]; then
+        mkdir -p "$(dirname "$config_dest")"
+        local example="${SCRIPT_DIR}/../config.example.sh"
+        if [ -f "$example" ]; then
+            cp "$example" "$config_dest"
+            echo "Config template copied to $config_dest"
+        fi
+    fi
+
+    echo ""
+    echo "Next: edit $config_dest and set TELECODER_RUNTIME if needed."
+}
+
+cmd_create() {
+    local repo_url="" repo_path="" branch="" test_cmd="" lint_cmd=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --repo-url)  repo_url="$2";  shift 2 ;;
+            --repo-path) repo_path="$2"; shift 2 ;;
+            --branch)    branch="$2";    shift 2 ;;
+            --test-cmd)  test_cmd="$2";  shift 2 ;;
+            --lint-cmd)  lint_cmd="$2";  shift 2 ;;
+            *) echo "Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    local id
+    id=$(session_create "$repo_url" "$repo_path" "$branch" "$test_cmd" "$lint_cmd")
+    echo "Session created: $id"
+}
+
+cmd_run() {
+    if [ $# -lt 2 ]; then
+        echo "Usage: telecoder run <session-id> <prompt>" >&2
+        return 1
+    fi
+    local id="$1"; shift
+    local prompt="$*"
+    session_run "$id" "$prompt"
+}
+
+cmd_stop() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: telecoder stop <session-id>" >&2
+        return 1
+    fi
+    session_stop "$1"
+}
+
+cmd_list() {
+    local status_filter=""
+    if [ $# -gt 0 ] && [ "$1" = "--status" ] && [ $# -gt 1 ]; then
+        status_filter="$2"
+    fi
+    session_list "$status_filter"
+}
+
+cmd_inspect() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: telecoder inspect <session-id>" >&2
+        return 1
+    fi
+    session_inspect "$1"
+}
+
+cmd_logs() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: telecoder logs <session-id> [--stream stderr] [--tail N]" >&2
+        return 1
+    fi
+    local id="$1"; shift
+    local stream="stdout" tail_n="100"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --stream) stream="$2"; shift 2 ;;
+            --tail)   tail_n="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    session_logs "$id" "$stream" "$tail_n"
+}
+
+cmd_attach() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: telecoder attach <session-id>" >&2
+        return 1
+    fi
+    session_attach "$1"
+}
+
+cmd_verify() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: telecoder verify <session-id>" >&2
+        return 1
+    fi
+    session_verify "$1"
+}
+
+cmd_delete() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: telecoder delete <session-id>" >&2
+        return 1
+    fi
+    echo -n "Delete session $1? [y/N] "
+    read -r confirm
+    if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+        session_delete "$1"
+    fi
+}
+
+cmd_help() {
+    cat <<EOF
+telecoder v${VERSION} — run a coding agent on your own VPS
+
+Usage: telecoder <command> [options]
+
+Commands:
+  init                          First-time setup
+  create [options]              Create a new session
+    --repo-url <url>              Git repo to clone
+    --repo-path <path>            Local repo path
+    --branch <name>               Branch to create/use
+    --test-cmd <cmd>              Test command
+    --lint-cmd <cmd>              Lint command
+  run <id> <prompt>             Run a prompt in a session
+  stop <id>                     Stop a running session
+  list [--status <s>]           List sessions
+  inspect <id>                  Show session details
+  logs <id> [--stream stderr]   View session logs
+  attach <id>                   Attach to tmux session
+  verify <id>                   Run tests/lint
+  delete <id>                   Delete a session
+  help                          Show this help
+
+Session runs in tmux. Close your terminal — it keeps going.
+Come back with: telecoder attach <id>
+EOF
+}
+
+# --- Main dispatch ---
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    init)    cmd_init "$@" ;;
+    create)  cmd_create "$@" ;;
+    run)     cmd_run "$@" ;;
+    stop)    cmd_stop "$@" ;;
+    list|ls) cmd_list "$@" ;;
+    inspect) cmd_inspect "$@" ;;
+    logs)    cmd_logs "$@" ;;
+    attach)  cmd_attach "$@" ;;
+    verify)  cmd_verify "$@" ;;
+    delete)  cmd_delete "$@" ;;
+    help|-h|--help)    cmd_help ;;
+    version|--version) echo "telecoder v${VERSION}" ;;
+    *) echo "Unknown command: $cmd. Run 'telecoder help'." >&2; exit 1 ;;
+esac

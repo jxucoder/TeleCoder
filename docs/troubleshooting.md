@@ -1,129 +1,71 @@
 # Troubleshooting
 
-## Common Issues
-
-### "Claude Code CLI not found"
-
-Claude Code is not installed or not in PATH.
+## "claude: command not found"
 
 ```bash
-# Install it
 npm install -g @anthropic-ai/claude-code
-
-# Check it's in PATH
 which claude
 ```
 
-If installed but not found, set the binary path in config:
-
-```toml
-[runtime]
-binary = "/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude"
-```
-
-### Session starts but produces no output
-
-Check stderr logs:
+If installed but not in PATH, set it explicitly:
 
 ```bash
-telecoder session logs <session-id> --stream stderr
+# ~/.config/telecoder/config.sh
+TELECODER_RUNTIME="/usr/local/bin/claude"
 ```
 
-Common causes:
-- Invalid or missing API key
-- Network issues on the VPS
-- Runtime binary not working
+## Session starts but no output
 
-### "Permission denied" errors
-
-Check file ownership:
+Check stderr:
 
 ```bash
-ls -la /var/lib/telecoder/
+telecoder logs <id> --stream stderr
 ```
 
-Fix permissions:
+Common causes: missing API key, network issues, bad binary path.
+
+## Session stuck in "running"
+
+The tmux session may have exited. `telecoder inspect <id>` auto-detects this and updates the status.
+
+Or check manually:
 
 ```bash
-sudo chown -R telecoder:telecoder /var/lib/telecoder/
+tmux ls | grep tc-<id>
 ```
 
-### Session stuck in "running" status
+## Git clone fails
 
-The process may have died. Refresh the status:
+Test git access directly:
 
 ```bash
-telecoder session inspect <session-id>
+git clone <your-repo-url> /tmp/test
 ```
 
-If the PID is no longer running, the status will update to "completed".
+See [Git Credentials Guide](git-credentials.md).
 
-### Git clone fails
-
-Check that the telecoder user has git access:
+## tmux not found
 
 ```bash
-sudo -u telecoder git clone <your-repo-url> /tmp/test
+sudo apt install -y tmux
 ```
 
-See the [Git Credentials Guide](git-credentials.md).
-
-### Service won't start
-
-Check the systemd logs:
+## Logs location
 
 ```bash
-sudo journalctl -u telecoder -n 50
+# stdout
+telecoder logs <id>
+
+# stderr
+telecoder logs <id> --stream stderr
+
+# Raw files
+ls ~/.telecoder/logs/
 ```
 
-Common causes:
-- Config file not found
-- Database directory permissions
-- Missing Python dependencies
-
-### Web UI not accessible
-
-Check the service is running:
+## Reset everything
 
 ```bash
-sudo systemctl status telecoder
-```
-
-Check the port is open:
-
-```bash
-curl http://127.0.0.1:7830/
-```
-
-If accessing remotely, check your firewall:
-
-```bash
-sudo ufw status
-sudo ufw allow 7830/tcp
-```
-
-## Getting Help
-
-Check logs:
-
-```bash
-# Service logs
-sudo journalctl -u telecoder -f
-
-# Session stdout
-telecoder session logs <id>
-
-# Session stderr
-telecoder session logs <id> --stream stderr
-```
-
-## Resetting
-
-To start fresh:
-
-```bash
-sudo systemctl stop telecoder
-sudo rm -rf /var/lib/telecoder/*
+rm -rf ~/.telecoder
 telecoder init
-sudo systemctl start telecoder
 ```
