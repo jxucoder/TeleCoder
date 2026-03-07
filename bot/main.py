@@ -1,3 +1,9 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "python-telegram-bot>=21.0",
+# ]
+# ///
 """Telegram bot for TeleCoder — relay messages straight to Claude Code."""
 
 import logging
