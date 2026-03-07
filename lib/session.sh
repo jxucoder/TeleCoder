@@ -13,7 +13,6 @@ session_create() {
         git clone "$repo_url" "$workspace/repo" 2>&1
         workspace="${workspace}/repo"
     elif [ -n "$repo_path" ]; then
-        # Use git worktree if inside a git repo, otherwise just set the path
         if git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
             git -C "$repo_path" worktree add "$workspace/repo" -b "${TELECODER_BRANCH_PREFIX}${id}" 2>&1
             workspace="${workspace}/repo"
@@ -26,8 +25,15 @@ session_create() {
         git -C "$workspace" checkout -b "$branch" 2>/dev/null || git -C "$workspace" checkout "$branch" 2>/dev/null
     fi
 
-    db_exec "INSERT INTO sessions (id, repo_url, repo_path, workspace, branch, status, test_cmd, lint_cmd)
-             VALUES ('${id}', '${repo_url}', '${repo_path}', '${workspace}', '${branch}', 'created', '${test_cmd}', '${lint_cmd}');"
+    db_param_exec \
+        "INSERT INTO sessions (id, repo_url, repo_path, workspace, branch, status, test_cmd, lint_cmd) VALUES (:id, :repo_url, :repo_path, :workspace, :branch, 'created', :test_cmd, :lint_cmd)" \
+        id "$id" \
+        repo_url "$repo_url" \
+        repo_path "$repo_path" \
+        workspace "$workspace" \
+        branch "$branch" \
+        test_cmd "$test_cmd" \
+        lint_cmd "$lint_cmd"
 
     echo "$id"
 }
@@ -43,17 +49,34 @@ session_run() {
     fi
 
     local logs_dir="${TELECODER_DATA}/logs"
+    local prompt_file="${TELECODER_DATA}/logs/${id}.prompt"
     mkdir -p "$logs_dir"
 
-    # Launch claude in a tmux session
+    # Write prompt to file so it never touches shell interpolation
+    printf '%s' "$prompt" > "$prompt_file"
+
+    # Build a shell script that reads the prompt from file
+    local runner="${logs_dir}/${id}.run.sh"
+    cat > "$runner" <<SCRIPT
+#!/usr/bin/env bash
+exec ${TELECODER_RUNTIME} -p "\$(cat '${prompt_file}')" --output-format stream-json \\
+    2>'${logs_dir}/${id}.stderr.log' \\
+    | tee '${logs_dir}/${id}.stdout.log'
+SCRIPT
+    chmod +x "$runner"
+
+    # Launch in tmux
     local tmux_name="tc-${id}"
-    tmux new-session -d -s "$tmux_name" -c "$workspace" \
-        "${TELECODER_RUNTIME} -p '${prompt}' --output-format stream-json 2>'${logs_dir}/${id}.stderr.log' | tee '${logs_dir}/${id}.stdout.log'"
+    tmux new-session -d -s "$tmux_name" -c "$workspace" "$runner"
 
     local pid
     pid=$(tmux list-panes -t "$tmux_name" -F '#{pane_pid}' 2>/dev/null | head -1)
 
-    db_exec "UPDATE sessions SET status='running', prompt='$(echo "$prompt" | sed "s/'/''/g")', pid=${pid:-0}, updated_at=datetime('now') WHERE id='${id}';"
+    db_param_exec \
+        "UPDATE sessions SET status='running', prompt=:prompt, pid=:pid, updated_at=datetime('now') WHERE id=:id" \
+        prompt "$prompt" \
+        pid "${pid:-0}" \
+        id "$id"
 
     echo "running in tmux session: $tmux_name (pid ${pid:-unknown})"
 }
@@ -84,7 +107,6 @@ session_list() {
     printf '%s\n' "$(printf '%.0s-' {1..80})"
 
     db_query "$query" | while IFS='|' read -r sid sstatus srepo screated; do
-        # Truncate long repo strings
         if [ ${#srepo} -gt 33 ]; then
             srepo="...${srepo: -30}"
         fi
@@ -129,7 +151,6 @@ session_inspect() {
         echo "  $sprompt"
     fi
 
-    # Show changed files if workspace has git
     if [ -d "${sworkspace}/.git" ]; then
         local changed
         changed=$(git -C "$sworkspace" status --porcelain 2>/dev/null)
