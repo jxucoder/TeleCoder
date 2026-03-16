@@ -2,10 +2,10 @@
 
 ## One Sentence
 
-TeleCoder is the simplest way to run a coding agent on your own VPS, keep it
-working after your laptop is closed, and come back later to a real result.
+TeleCoder is a self-hosted coding agent that runs on your VPS, keeps working
+when you disconnect, and acts within boundaries you control.
 
-## The User
+## Who It Is For
 
 TeleCoder is for:
 
@@ -14,461 +14,504 @@ TeleCoder is for:
 - freelancers
 - very small teams
 
-It is for people who want a remote coding agent quickly, not a company platform.
+It is for people who want an always-on coding agent they control on their own
+machine, not a hosted platform and not an enterprise system.
 
 ## The Problem
 
-Local coding agents are powerful, but the laptop is the wrong place for
-long-running work.
+Most coding agents are session tools. You open a terminal, give a prompt, wait
+for an answer, and the useful context dies with the session.
 
-Your laptop:
+That is fine for short interactive work. It breaks down when the user wants the
+agent to keep running after they close the laptop, reconnect later from another
+device, or keep an eye on a repo while they are away.
 
-- sleeps
-- disconnects
-- gets cluttered
-- holds personal credentials
-- is awkward for running multiple agent tasks at once
+The laptop is the wrong host for this behavior. It sleeps, disconnects, and is
+not meant to be a durable worker. A VPS is a better host:
 
-The user does not actually want "AI on my laptop."
-The user wants:
+- it stays online
+- it is under the user's control
+- the repo, credentials, and runtime stay on a machine the user owns
+- it can keep state between sessions
 
-- a coding agent that keeps working
-- a workspace that stays alive
-- something they control
-- something easy to set up
+What the user actually wants:
 
-## The Core Insight
+- a coding agent that keeps working after they disconnect
+- a persistent place to resume work later
+- useful outputs: diffs, logs, test results, summaries
+- standing instructions for repetitive repo work
+- clear approval gates for risky actions
+- a simple way to see what happened while they were away
 
-The simplest useful product is not "a better coding agent."
+## The Product Thesis
 
-It is:
+The interesting product is not a better prompt box.
 
-**a remote coding box with sessions**
+The interesting product is:
 
-That is enough to create value.
+**an always-on coding agent that can watch, act, verify, and report within
+clear operating boundaries**
+
+Reactive prompting matters, but it is table stakes. The real step forward is a
+system that can keep going without the user babysitting a terminal.
 
 ## What TeleCoder Is
 
 TeleCoder is:
 
-- a remote-first coding tool
-- centered on persistent sessions
-- installed on a VPS the user controls
-- focused on useful outputs like diffs, branches, PRs, logs, and test results
-- simple to set up and simple to understand
+- a self-hosted service installed on a VPS the user controls
+- a persistent remote session system for coding work
+- an orchestration layer above existing coding runtimes
+- opinionated at the core and extensible at the edges
+- proactive when configured through watches
+- reactive when the user wants to prompt it directly
+- focused on code work, repo state, verification, and summaries
+- reachable through CLI first, with web and chat surfaces where useful
+
+TeleCoder runs coding agents through `acpx`, which gives it a common runtime
+interface instead of forcing TeleCoder to build its own per-agent protocol.
 
 ## What TeleCoder Is Not
 
 TeleCoder is not:
 
-- an enterprise developer platform
-- a general automation framework
-- a chat app with shell access
-- a replacement for every IDE workflow
-- a product that needs complex cloud architecture in v1
+- a general personal assistant
+- a hosted SaaS where TeleCoder owns the infrastructure
+- a replacement for the user's IDE
+- a new foundation model or a new coding agent runtime
+- an "autonomous at any cost" system
+- a workflow engine for every business function
 
-## Product Promise
+## The Core Promise
 
-The promise should be concrete:
+The product promise is simple:
 
-1. Get a Linux VPS
-2. Run one install command
-3. Add model and git credentials
-4. Start a session
-5. Let it work remotely
-6. Resume later from anywhere
+1. install TeleCoder on a Linux VPS
+2. connect credentials and a repo
+3. start a session or configure a watch
+4. leave
+5. come back to useful results and clear decisions
 
-If this does not feel easy, the product has failed.
+If the user returns to confusion, surprise changes, or raw model output, the
+product has failed.
 
-## The V1 Goal
+## Two Modes
 
-The first version should do one thing very well:
+TeleCoder supports both reactive and proactive use. Both matter, but proactive
+behavior is the differentiator.
 
-**run persistent remote coding sessions on a VPS**
+### Reactive
 
-Everything else is secondary.
+The user sends a prompt and TeleCoder runs the work on the VPS:
 
-That means v1 should be optimized for:
+- "Fix the failing test in auth.go"
+- "Refactor the billing module"
+- "What changed in this package?"
 
-- fast setup
-- reliable sessions
-- simple resume
-- clear outputs
-- basic verification
+This must already be a good product on its own: durable sessions, durable
+workspaces, logs, artifacts, and resumable state.
 
-Not for:
+### Proactive
 
-- large-team workflows
-- enterprise auth
-- deep integrations
-- broad automation
+The user defines standing instructions. TeleCoder reacts to events within those
+instructions:
 
-## V1 Defaults
+- watch CI on `main`; if it fails, investigate and draft a fix
+- watch a PR for review comments and prepare updates
+- run the full test suite nightly and report flaky tests
+- keep a working branch current and report conflicts
+- monitor a deploy window when the required integration exists
 
-To stay simple, v1 should make a few hard choices.
+The user should not need to sit in front of a terminal waiting for the moment
+that work becomes actionable.
 
-### Platform
+## The Safety Model
 
-V1 should target one common Linux VPS setup first.
+This is the most important design requirement.
 
-Example:
+TeleCoder is only useful if it is both active and predictable. That means the
+system needs more than approval buttons. It needs explicit containment rules.
 
-- Ubuntu VPS
-- one install command
-- one long-running TeleCoder service
+### Rule 1: Autonomous writes stay contained
 
-### Runtime
+By default, proactive write actions must happen in an isolated workspace or
+branch owned by TeleCoder, not directly on the user's primary branch.
 
-V1 should support **one runtime well**.
+TeleCoder may:
 
-The simplest default is:
+- investigate
+- run tests and linters
+- generate patches
+- apply low-risk changes in its own workspace
+- commit to a TeleCoder-managed branch when policy allows
 
-- Claude Code first
+TeleCoder may not, without explicit approval:
 
-Support for Codex or other runtimes can come later.
+- push to a shared remote
+- open or update a PR on the user's behalf
+- merge
+- deploy
+- delete branches, tags, or infrastructure
+- rewrite a branch the user is actively using
 
-### Persistence
+Containment matters more than autonomy. A safe draft branch is useful. A silent
+write to the wrong branch is not.
 
-V1 should persist state locally on the VPS.
+### Rule 2: Risk is graduated
 
-That means:
+Actions are grouped by risk:
 
-- session metadata in SQLite
-- logs and artifacts on local disk
-- one workspace or worktree per session
+| Risk | Examples | Default |
+|------|----------|---------|
+| Read-only | investigate, analyze, summarize, test, lint | Auto |
+| Contained write | format, small fix, rebase in TeleCoder branch | Auto or Ask |
+| Repo write | commit, push branch, post PR reply, open PR | Ask |
+| High-risk | merge, deploy, delete, privileged action | Always ask |
 
-This is simple, understandable, and good enough for the first version.
+Users can override defaults per watch, per repo, or globally:
 
-### Isolation
+```yaml
+trust:
+  auto_approve: [investigate, test_run, lint_run]
+  ask_before: [commit, push_branch, pr_reply]
+  always_ask: [merge, deploy, delete]
+```
 
-V1 does not need perfect isolation.
+### Rule 3: Spending must be bounded
 
-The simplest reliable starting point is:
+Every watch and every job should have a budget. When providers expose reliable
+token or cost telemetry, TeleCoder can enforce dollar budgets directly. When
+they do not, TeleCoder should fall back to a normalized budget such as request
+count, token estimate, runtime duration, or hard stop conditions.
 
-- one process per session
-- one workspace per session
+The product requirement is not "perfect billing math." The product requirement
+is "no runaway work and no silent runaway spend."
 
-Containers or stronger sandboxing can come later.
+### Rule 4: Failed loops must stop
 
-### Git
+TeleCoder needs circuit breakers:
 
-V1 should assume the VPS can clone and push to the user's repo.
+- stop after repeated failures on the same issue
+- stop if new changes make the situation worse
+- stop if the agent is not making progress
+- stop if required verification cannot run
+- stop when a budget is exhausted
 
-Core value does not depend on deep GitHub integration.
+When TeleCoder stops, it should report what it tried, what it learned, and what
+decision it needs from the user.
 
-Useful v1 outputs are:
+### Rule 5: Trust includes security boundaries
 
-- local changes
-- diff summary
-- branch
-- pushed branch when configured
+For a self-hosted agent, "trust" also includes:
 
-PR creation is valuable, but not required for the first useful version.
+- where credentials are stored
+- which credentials a repo or watch is allowed to use
+- how webhook signatures are verified
+- which chat channels are allowed to approve actions
+- how user identity is confirmed for approvals
+- what audit trail exists for sensitive actions
 
-## User Experience
+Approval flows are part of the trust model, but not the whole trust model.
 
-The UX should feel like:
+### The Standard
 
-**"this is my remote coding box."**
+The user should feel:
 
-### First Run
-
-The first-run experience should be minimal:
-
-- install TeleCoder
-- add credentials
-- point it at a repo
-- start using it
-
-The setup target is minutes, not hours.
-
-### Starting Work
-
-The user should be able to say things like:
-
-- "fix this failing test"
-- "review this diff and make the requested changes"
-- "refactor this module and run the tests"
-- "investigate why CI is failing"
-
-No special command language should be required for normal use.
-
-### During Work
-
-After the session starts, the user should be free to:
-
-- close the browser
-- close the laptop
-- disconnect SSH
-- switch devices
-
-The session should keep running remotely.
-
-### Returning Later
-
-When the user comes back, they should see:
-
-- what the agent did
-- what changed
-- what passed
-- what failed
-- what the next step is
-
-The experience should favor continuation, not restarting from zero.
-
-## Core Product Concept
-
-The core object in TeleCoder is the **session**.
-
-A session is a remote unit of work with:
-
-- a repo
-- a working state
-- prompt history
-- execution history
-- outputs
-- status
-
-Typical lifecycle:
-
-`created -> running -> verifying -> completed | failed | stopped`
-
-This should stay simple.
-
-## Outputs
-
-TeleCoder should produce concrete outputs, not just chat text.
-
-Typical outputs:
-
-- diff summary
-- changed files
-- branch
-- PR when configured
-- logs
-- test results
-- failure diagnosis
-
-The output should make the session useful even when the task is incomplete.
-
-## Verification
-
-TeleCoder should try to prove its work in simple ways.
-
-In v1, that mostly means:
-
-- run tests when possible
-- run linters when possible
-- show what passed
-- show what failed
-- summarize failures clearly
-
-This alone makes the product much more useful than a remote shell with LLM text.
-
-## Product Surface
-
-Keep v1 narrow.
-
-### v1
-
-- CLI
-- simple web UI
-
-That is enough.
-
-### Later
-
-- GitHub entry points
-- small-team sharing
-- optional chat surfaces
-
-These are later features, not the product core.
+**this agent is useful, visible, and under control**
 
 ## Architecture
-
-Keep the mental model obvious.
 
 ```
 [User]
   |
   v
-[CLI / Web]
+[CLI / Web / Chat]
   |
   v
-[TeleCoder on VPS]
- - TeleCoder service
+[TeleCoder Service on User VPS]
+ - session engine
+ - event router
+ - policy engine
+ - trust and approval layer
+ - scheduler
+ - notification layer
  - SQLite state
- - local artifacts
+ - local artifacts and logs
+ - credential and webhook handling
   |
-  +-----------------------------+
-  |                             |
-  v                             v
-[Session Workspace]        [Session Workspace]
- - repo                    - repo
- - working state           - working state
- - agent runtime           - agent runtime
- - logs                    - logs
- - outputs                 - outputs
+  +---------------------------------------+
+  |                                       |
+  v                                       v
+[Reactive Path]                     [Proactive Path]
+ - prompt from user                 - GitHub webhooks
+ - direct session                   - cron schedules
+ - resume session                   - repo state watchers
+                                     - future external event sources
+  |                                       |
+  v                                       v
+[Job / Session Layer]
+ - one durable session per task
+ - queueing and prioritization
+ - isolated workspace per session
+ - verification and result capture
+ - branch ownership and write lease
+  |
+  v
+[acpx Runtime Layer]
+ - ACP over JSON-RPC 2.0 / stdio
+ - persistent sessions
+ - prompt queueing
+ - reconnect and cancellation
+  |
+  +----+----+----+----+
+  |    |    |    |    |
+  v    v    v    v    v
+[Claude] [Codex] [Gemini] [OpenCode] [others]
 ```
 
-This is enough for the vision.
+### Why `acpx`
 
-If stronger isolation is needed, sessions can later run in:
+`acpx` already solves the runtime protocol layer:
 
-- separate processes
-- worktrees
-- containers
-- VMs
+- persistent ACP sessions
+- named sessions
+- prompt queueing
+- cancellation
+- reconnect after process failure
+- support for multiple runtimes through one interface
 
-But v1 should choose the simplest reliable approach.
+TeleCoder should not rebuild that. TeleCoder should own the product layer above
+it: sessions, watches, policies, approvals, verification, and user experience.
+That keeps the core product opinionated while leaving room to add runtimes and
+integrations through standard interfaces.
 
-## The Agent
+## Sessions
 
-TeleCoder is the product around the agent, not the agent itself.
+Sessions are the base product unit.
 
-Inside each session, TeleCoder runs a coding agent runtime.
+A session should have:
 
-Important simplification:
+- a durable workspace
+- a durable conversation and event history
+- visible status
+- logs and artifacts
+- verification results when configured
+- a clear result summary
 
-v1 should support **one runtime well**, and that runtime should be part of the
-default install story.
+If sessions are weak, proactive behavior will be weak too.
 
-Multiple runtimes can come later.
+## Watches
 
-The user should care that TeleCoder works remotely and reliably.
-They should not need to care about the internal runtime abstraction.
+Watches are standing instructions: monitor a condition, evaluate what happened,
+and decide whether to act.
 
-## Security
+### Example Watch Types
 
-The main safety property is simple:
+**CI Watch**: monitor CI for a branch. On failure, investigate, verify, and
+prepare a fix when possible.
 
-the agent runs on the VPS, not on the user's laptop.
+```bash
+telecoder watch ci --repo api-server --branch main
+```
 
-That means:
+**PR Watch**: monitor a PR for review comments or status changes and prepare
+code updates or draft replies.
 
-- mistakes happen away from the personal machine
-- credentials can be scoped to the VPS
-- the remote workspace can be controlled more cleanly
+```bash
+telecoder watch pr 231 --repo api-server --address-comments
+```
 
-This is not enterprise-grade security in v1.
-It is a simpler and safer default than local execution.
+**Schedule Watch**: run a task on a schedule.
 
-## Best Early Use Cases
+```bash
+telecoder watch schedule --repo api-server --cron "0 2 * * *" --task "run full test suite, report flaky tests"
+```
 
-The best early use cases are:
+**Branch Watch**: keep a TeleCoder-managed working branch current and report
+conflicts before they affect the user.
 
-- overnight coding work
-- bug fixes
-- refactors
-- PR follow-up
-- test failure investigation
-- long-running tasks the user does not want on a laptop
-- deployment watch and report
+```bash
+telecoder watch branch --repo api-server --branch telecoder/auth-fix --rebase-on main
+```
 
-These are the right starting point because they fit the product's core value.
+**Deploy Watch**: monitor a deploy window when the repo is connected to the
+required logs or telemetry source.
+
+```bash
+telecoder watch deploy --repo api-server --for 30m
+```
+
+### Watch Lifecycle
+
+1. The user creates a watch.
+2. TeleCoder stores the watch and registers its trigger conditions.
+3. An event fires.
+4. The policy engine decides whether to ignore, investigate, act, or ask.
+5. TeleCoder records the outcome and sends the right summary or approval
+   request.
+
+### Watch Output
+
+A watch should produce something useful even when it stops short of acting:
+
+- "CI failed on `main`. Root cause identified. Draft fix prepared on branch `telecoder/ci-auth-fix`. Approve push?"
+- "PR 231 has 3 new comments. 2 addressed in code, 1 needs product input. Draft replies ready."
+- "Nightly test run: 47 passed, 2 flaky. Investigation attached."
+- "Deploy stable after 30 minutes. No significant error change detected."
+
+The user should benefit from the investigation even when they reject the next
+action.
+
+## The Return Experience
+
+This is the signature user experience.
+
+When the user comes back after hours away, TeleCoder should present a concise
+summary of what changed, what completed, what failed, and what needs approval.
+
+```text
+Since you were last here (8 hours ago):
+
+Watches:
+  CI on main: failed once, draft fix prepared
+  PR 231: 2 comments addressed, 1 needs input
+  Nightly tests: 47/49 passed, 2 flaky
+
+Sessions:
+  fix-checkout-tests: complete
+  refactor-billing: waiting for approval
+
+Approvals:
+  Push branch telecoder/pr-231-fixes?
+  Commit refactor-billing changes?
+```
+
+This summary should be:
+
+- concise first
+- actionable
+- available across surfaces
+- honest about uncertainty
+- linked to the underlying logs, diffs, and verification
+
+The product should feel like a reliable handoff, not like a pile of background
+noise.
+
+## User Experience
+
+### First Run
+
+- install TeleCoder on a VPS
+- configure model and git credentials
+- connect a repo
+- start a session or create a watch
+
+The setup bar is low: one clear path, minimal choices, and fast time to first
+useful result.
+
+### During Work
+
+After starting a session or enabling a watch, the user should be free to:
+
+- close the laptop
+- disconnect SSH
+- switch devices
+- come back later
+
+The machine stays on. The work stays stateful.
+
+### Approval Moments
+
+TeleCoder should only interrupt when a real decision exists:
+
+- "I found the CI failure and prepared a fix. Push the branch?"
+- "I addressed 2 of 3 PR comments. Post the replies?"
+- "I found flaky tests. Investigate further?"
+
+The user can approve, reject, or request more detail.
 
 ## Scope Boundary
 
-TeleCoder should focus on coding and coding-adjacent work.
-
 ### In Scope
 
-- writing and changing code
-- fixing tests
-- refactors
-- PR follow-up
-- CI investigation
-- release or deploy readiness checks
-- monitoring a deployment and reporting status
-- checking logs, errors, and basic metrics when they relate to software changes
+- code changes, refactors, bug fixes
+- test and lint verification
+- CI failure diagnosis
+- PR review handling
+- branch management in TeleCoder-owned branches
+- repo and code questions
+- changelogs and release summaries
+- scheduled maintenance work
+- deploy monitoring when the required integration exists
 
-### Out Of Scope
+### Out of Scope
 
-- general personal assistant work
-- scheduling
-- email drafting
-- generic research unrelated to software work
-- sales, marketing, or operations workflows that do not connect back to code
+- general personal assistant tasks
+- email, calendar, and scheduling
+- broad business automation
+- sales, marketing, or operations workflows
+- "click around the internet and do everything" behavior
 
-This keeps the product simple.
+The rule is simple: if it helps change, verify, debug, review, or summarize
+software work, it belongs. Otherwise it probably does not.
 
-The rule is:
+## Extensibility
 
-if the task helps change, verify, ship, or debug software, it probably belongs
-in TeleCoder.
+TeleCoder should be opinionated at the core and extensible at the edges.
 
-## Why Not Just Use Claude Code
+The core should stay narrow and reliable:
 
-Claude Code is already very strong.
+- sessions
+- watches
+- policies and approvals
+- verification
+- summaries
 
-TeleCoder should not try to win by claiming to be a better general coding agent.
+Developers should be able to extend TeleCoder with:
 
-TeleCoder should win on a narrower promise:
+- new watch sources
+- new notification or approval channels
+- repo-specific verification commands
+- custom policies and trust rules
+- additional runtimes and integrations through standard interfaces
 
-**your own remote coding box on your own VPS**
+The goal is not a plugin marketplace and not a generic automation framework.
+The goal is a system developers can adapt to their own workflows without losing
+the product's clarity.
 
-If a user wants the best hosted general coding agent experience, Claude Code may
-still be the better product.
+## Product Direction
 
-TeleCoder matters when the user specifically wants:
+TeleCoder should build depth in a narrow space:
 
-- self-hosting
-- a persistent remote workspace
-- a setup they control
-- a session that keeps running on their own machine
+- durable remote coding sessions
+- safe proactive repo work
+- strong verification and summaries
+- simple self-hosted operation
 
-It should also be simpler than nearby self-hosted projects.
-
-The wedge is not "more features."
-The wedge is:
-
-- fewer decisions
-- faster setup
-- one opinionated path that works
-- a clearer remote-session model
+It should not win by claiming to do everything. It should win by being the most
+trustworthy way to let a coding agent keep working on your own machine.
 
 ## Success Criteria
 
 TeleCoder is successful if users say:
 
-- "I set it up fast."
-- "I can leave it running and come back later."
-- "It is more comfortable than running agents on my laptop."
-- "It saved me time on real work."
-
-## Roadmap
-
-### v1
-
-- 5-minute VPS setup
-- one runtime
-- CLI
-- simple web UI
-- persistent sessions
-- run, stop, resume
-- logs and test visibility
-- SQLite state on local disk
-- one workspace or worktree per session
-
-### v2
-
-- stronger isolation
-- better git and PR support
-- multiple concurrent sessions
-- simple small-team sharing
-
-### v3
-
-- runtime choice
-- optional chat entry points
-- more polished collaboration
+- "I set it up without drama."
+- "I left it running and came back to useful work."
+- "I trust the boundaries."
+- "I can see what happened quickly."
+- "It helped with repo work without surprising me."
+- "It is simpler than stitching this together myself."
 
 ## Final Framing
 
-TeleCoder is a simple remote coding session product for individuals and very
-small teams.
+TeleCoder is a self-hosted coding agent for people who want durable sessions
+and controlled automation on their own VPS.
 
-The product is not "AI for everything."
+It keeps working when they disconnect. It watches what they ask it to watch. It
+acts in contained workspaces. It verifies what it can. It reports clearly. It
+asks before crossing a boundary.
+
 The product is:
 
-**a coding agent that lives on your VPS instead of on your laptop**
+**a coding agent that works while you are away, on a machine you control, with
+trust you can inspect**

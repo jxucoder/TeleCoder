@@ -1,0 +1,18 @@
+{
+  "name": "telecoder",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.5",
+  "scripts": {
+    "serve": "bun src/cli.ts serve",
+    "dev": "bun --watch src/cli.ts serve",
+    "task": "bun src/cli.ts run",
+    "rerun": "bun src/cli.ts rerun",
+    "status": "bun src/cli.ts status",
+    "events": "bun src/cli.ts events",
+    "lineage": "bun src/cli.ts lineage",
+    "list": "bun src/cli.ts list",
+    "config": "bun src/cli.ts config",
+    "test": "bun test ./test"
+  }
+}

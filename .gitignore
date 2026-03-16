@@ -1,3 +1,7 @@
 resources/
-/telecoder
-*.exe
+node_modules
+.DS_Store
+.telecoder*
+coverage
+dist
+.tmp
