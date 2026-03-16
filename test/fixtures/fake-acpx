@@ -1,0 +1,2 @@
+#!/bin/sh
+printf '%s\n' '{"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"FAKE_ACPX_OK"}}}}'

@@ -1,0 +1,15 @@
+[Unit]
+Description=TeleCoder Bun service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/telecoder/app
+EnvironmentFile=/etc/telecoder/telecoder.env
+ExecStart=/opt/bun/bin/bun src/cli.ts serve
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
